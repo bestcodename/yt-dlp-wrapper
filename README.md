@@ -4,6 +4,19 @@ A pragmatic utility to download SoundCloud (and other supported sites) playlists
 bestaudio/original copy per track in a shared library, convert locally to MP3/WAV/FLAC with ffmpeg, and generate
 per-playlist M3U8 files that reference the shared library (so you don’t keep duplicate audio files for the same track
 across playlists).
+
+## Quick start
+
+1) Install prerequisites: yt-dlp and ffmpeg must be on your PATH; PHP 8.1+ installed.
+2) Create a playlists.txt file with one URL per line (comments with `#` allowed).
+3) Run:
+
+```bash
+php SoundCloudPlaylistDownloader.php --input playlists.txt --out ./downloads
+```
+
+That’s it. Originals are downloaded once into a shared library, conversions (mp3/wav/flac) are done locally, and per-playlist M3U8 files are created.
+
 Key goals:
 
 - One download per track across all playlists (deduplicated via a single download archive).
@@ -22,6 +35,14 @@ Optional:
 
 - Cookies file for authenticated content (e.g., SoundCloud likes, private playlists)
 - ddev/Docker or any environment that can run PHP and the binaries
+
+Tip: Check versions
+
+```bash
+yt-dlp --version
+ffmpeg -version
+php -v
+```
 
 ## Installation
 
@@ -62,8 +83,9 @@ MP3_QUALITY=0
 # Base filename template for library originals (applies to shared library)
 LIB_FILENAME_TEMPLATE=%(id)s - %(title)s
 
-# Per-playlist file naming (for display/metadata; conversion uses library name)
-FILENAME_TEMPLATE=%(playlist_index)03d - %(title)s
+# Playlist file naming (for generated .m3u8 files)
+# Filenames are derived from: "<Uploader> - <Playlist Title> [<id>] - <format>.m3u8"
+# This pattern is currently not configurable.
 
 # How to infer album tag during conversion, by priority
 ALBUM_FROM=playlist_title|title
@@ -146,11 +168,45 @@ ddev exec -s web php /var/www/html/SoundCloudPlaylistDownloader.php
 
 ## Output layout (default)
 
-- downloads/
-    - .archive/
-        - original.txt
+```
+downloads/
+  .archive/
+    original.txt
+  library/
+    original/
+      <id> - <title>.<ext>
+      <id> - <title>.info.json
+      <id> - <title>.jpg
+    mp3/
+      <id> - <title>.mp3
+    wav/
+      <id> - <title>.wav
+    flac/
+      <id> - <title>.flac
+  playlists/
+    <Uploader> - <Playlist Title> [<id>] - mp3.m3u8
+    <Uploader> - <Playlist Title> [<id>] - wav.m3u8
+    <Uploader> - <Playlist Title> [<id>] - flac.m3u8
+```
 
-    - library/
-        - original/
-            -
-                - .
+### Customize the layout
+- OUTPUT_DIR controls the base output folder.
+- LIBRARY_DIR overrides the shared library location; originals go to LIBRARY_DIR/original and conversions to LIBRARY_DIR/<format>.
+- ARCHIVE_DIR overrides where the single download archive (original.txt) is stored.
+- PLAYLISTS_DIR overrides where .m3u8 files are written; by default it is OUTPUT_DIR/playlists.
+- LIB_FILENAME_TEMPLATE controls the base filename for originals (and thus converted files), default: "%(id)s - %(title)s".
+- Thumbnails are converted to .jpg and saved next to the original, along with .info.json from yt-dlp.
+
+## Troubleshooting / FAQ
+
+- 403/429 errors or missing tracks
+  - Use a cookies file for authenticated/liked/private content: export browser cookies in Netscape format and set COOKIES_FILE or pass via env.
+  - Add gentle rate limits in .env (e.g., LIMIT_RATE=1M, SLEEP_REQUESTS=1-3, EXTRACTOR_RETRIES=10, RETRY_SLEEP=exp=2:10:120).
+- Thumbnails or metadata missing
+  - Ensure yt-dlp is up-to-date. Sidecars (info.json, jpg) are saved next to the original; conversions embed tags/artwork when available.
+- I changed FORMATS and want to add another format later
+  - Re-run with the new FORMATS. Originals are cached; only conversions run.
+- Different .env location
+  - Set DOTENV_PATH=/absolute/path/to/.env or pass options via CLI flags (CLI takes precedence).
+- Where are playlists (.m3u8) stored?
+  - By default OUTPUT_DIR/playlists, or override with --playlists-dir or PLAYLISTS_DIR.
