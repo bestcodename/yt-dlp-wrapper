@@ -1,0 +1,8 @@
+<component name="CopyrightManager">
+  <settings default="NDCom">
+    <module2copyright>
+      <element module="NDCom Magento Modules" copyright="NDCom Magento Module" />
+      <element module="NDCom Shopware Plugins" copyright="NDCom Shopware Plugin" />
+    </module2copyright>
+  </settings>
+</component>
