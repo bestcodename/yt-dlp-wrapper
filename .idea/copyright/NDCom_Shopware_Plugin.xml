@@ -1,0 +1,6 @@
+<component name="CopyrightManager">
+  <copyright>
+    <option name="notice" value="NDCom Plugins for Shopware 6 - &lt;product&gt;&#10; &#10;NOTICE OF LICENSE&#10; &#10;This source file is subject to the NDCom Digital license (EULA) that is&#10;available in german through the world-wide-web at this URL:&#10;https://licenses.ndcnet.com/eula-b2b-current.pdf&#10; &#10;DISCLAIMER&#10; &#10;Do not edit or add to this file if you wish to upgrade this extension to newer&#10;version in the future.&#10; &#10;@category NDCom&#10;@package Ndcom_&lt;product&gt;&#10;@copyright (c) &amp;#36;today.year NDCom Digital GmbH &amp;amp; Co. KG &lt;https://www.ndcom.de&gt;&#10;@license See https://licenses.ndcnet.com/eula-b2b-current.pdf" />
+    <option name="myName" value="NDCom Shopware Plugin" />
+  </copyright>
+</component>
