@@ -5,6 +5,12 @@ bestaudio/original copy per track in a shared library, convert locally to MP3/WA
 per-playlist M3U8 files that reference the shared library (so you don’t keep duplicate audio files for the same track
 across playlists).
 
+## Why this project (intention)
+
+I wanted a downloader that can take a list of playlists, download each track only once (even if it appears in multiple playlists), and still let me import each playlist separately into Rekordbox. This tool achieves that by using:
+- A single shared library for originals (deduplicated with one download archive), so tracks are never re-downloaded across runs or playlists.
+- Per-playlist M3U8 files that point to the shared library, so each playlist can be imported on its own into Rekordbox without duplicating audio on disk.
+
 ## Quick start
 
 1) Install prerequisites: yt-dlp and ffmpeg must be on your PATH; PHP 8.1+ installed.
@@ -141,6 +147,9 @@ Specifying a unified playlists directory (where .m3u8 files are written):
 php SoundCloudPlaylistDownloader.php --input playlists.txt --out ./downloads --playlists-dir ./downloads/playlists
 ```
 
+Rekordbox import:
+- In Rekordbox, use File > Import Playlist and select the generated .m3u8 for the format you want (e.g., mp3). Each playlist can be imported separately. The audio files are referenced from the shared library, so no duplicates are created on disk.
+
 Example with a custom cookies file and formats:
 
 ``` bash
@@ -165,6 +174,7 @@ ddev exec -s web php /var/www/html/SoundCloudPlaylistDownloader.php
 - Generates per-playlist M3U8 files for each requested format (except original), stored in a unified playlists
   directory (default: OUTPUT_DIR/playlists). M3U8 entries are relative paths pointing to the shared library—no on-disk
   duplication.
+- Designed so each playlist’s M3U8 can be imported independently into Rekordbox, while all tracks are stored only once.
 
 ## Output layout (default)
 
