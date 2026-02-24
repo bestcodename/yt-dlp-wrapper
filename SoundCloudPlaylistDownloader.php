@@ -18,7 +18,12 @@ declare(strict_types=1);
 ini_set('memory_limit', '-1');
 error_reporting(E_ALL);
 
-// Simple .env loader (no external deps)
+/**
+ * Simple .env loader (no external deps)
+ *
+ * @param string|null $path
+ * @return void
+ */
 function loadDotenv(?string $path = null): void
 {
     $path ??= getcwd().DIRECTORY_SEPARATOR.'.env';
@@ -71,7 +76,12 @@ function o(string $msg): void
     fwrite(STDOUT, $msg.PHP_EOL);
 }
 
-function requireBinary(string $bin, ?string $versionArg = '--version'): void
+/**
+ * @param string $bin
+ * @param string|null $versionArg
+ * @return void
+ */
+function requireBinary(string $bin, ?string $versionArg = null): void
 {
     $cmd = escapeshellcmd($bin).($versionArg ? ' '.$versionArg : '');
     $exit = 0;
@@ -345,7 +355,7 @@ function ensureConverted(
     // Run
     $cmdStr = implode(
         ' ',
-        array_map(static fn($p) => is_string($p) && !str_contains($p, ' ') ? $p : escapeshellarg((string)$p), $cmd),
+        array_map(static fn($p) => escapeshellarg((string)$p), $cmd),
     );
     [$exit] = run($cmdStr);
 
@@ -587,7 +597,7 @@ foreach ($urls as $urlIdx => $url) {
         natsort($list);
         $list = array_values($list);
 
-        $m3uDir = $PLAYLISTS_DIR ?: $playlistDir;
+        $m3uDir = $PLAYLISTS_DIR;
         $m3uPath = rtrim($m3uDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR."{$plFolder} - {$fmt}.m3u8";
 
         $m3u = "#EXTM3U\n";
