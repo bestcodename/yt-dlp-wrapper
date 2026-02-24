@@ -103,11 +103,11 @@ $ARCHIVE_DIR = getenv('ARCHIVE_DIR') ?: null;                   // default: $bas
 $LIB_FILENAME_TEMPLATE = getenv('LIB_FILENAME_TEMPLATE') ?: '%(id)s - %(title)s';
 
 // Unified playlists directory (all m3u8s written here directly; skip "original")
-$PLAYLISTS_DIR = $options['playlists-dir']
-    ??
-    (getenv('PLAYLISTS_DIR') ?: ($baseOutDir ? rtrim($baseOutDir, DIRECTORY_SEPARATOR).
-        DIRECTORY_SEPARATOR.
-        'playlists' : null));
+$PLAYLISTS_DIR = $options['playlists-dir'] ?? (getenv('PLAYLISTS_DIR') ?: ($baseOutDir ? rtrim(
+        $baseOutDir,
+        DIRECTORY_SEPARATOR
+    ).DIRECTORY_SEPARATOR.
+    'playlists' : null));
 
 // Retry/backoff and throttling (tune via .env)
 $EXTRACTOR_RETRIES = getenv('EXTRACTOR_RETRIES') ?: '10';       // number or "infinite"
@@ -425,15 +425,8 @@ foreach ($urls as $urlIdx => $url) {
         continue;
     }
 
-    $plFolder = safeName(sprintf('%s - %s [%s]', $plUploader, $plTitle, $plId));
+    $plFolder = safeName(sprintf('%s - %s', $plUploader, $plTitle));
     o("Playlist: {$plFolder}");
-
-    // Ensure per-playlist dir exists (kept for organization; playlists will be written to $PLAYLISTS_DIR)
-    $playlistDir = rtrim($baseOutDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$plFolder;
-    if (!is_dir($playlistDir) && !@mkdir($playlistDir, 0777, true)) {
-        e("Failed to create directory: {$playlistDir}");
-        continue;
-    }
 
     // Anti-429 and sidecar options for ORIGINAL ONLY
     $commonArgs = [
