@@ -296,4 +296,8 @@ corepack_enable: false
 # See https://ddev.readthedocs.io/en/stable/users/extend/custom-commands/ for more
 # information on the commands that can be extended and the tasks you can define
 # for them. Example:
+hooks:
+  post-start:
+    - exec: "composer install --no-dev --no-interaction --working-dir=/var/www/html"
+
 #hooks:

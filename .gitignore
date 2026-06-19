@@ -1,3 +1,6 @@
-/downloads/
+/.cache/
+/.claude/
+/config/
 /cookies.txt
-/playlists.txt
+/downloads/
+/vendor/
