@@ -6,6 +6,7 @@ namespace App\Command;
 
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
@@ -153,19 +154,56 @@ class SoundCloudDownloadCommand extends BaseCommand
             'flac' => $libraryDir.DIRECTORY_SEPARATOR.'flac',
         ];
 
-        $this->io->text('Starting downloads...');
+        $this->io->text('Fetching playlist metadata...');
 
-        foreach ($urls as $urlIdx => $url) {
-            $this->io->section(sprintf('[%d/%d] %s', $urlIdx + 1, count($urls), $url));
+        $failed = [];
 
+        $fetchBar = new ProgressBar($output, count($urls));
+        $fetchBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% %message%');
+        $fetchBar->setMessage('');
+        $fetchBar->start();
+
+        $playlists = [];
+        foreach ($urls as $url) {
+            $fetchBar->setMessage(parse_url($url, PHP_URL_PATH) ?? $url);
             try {
                 [$plTitle, , $plUploader, $plEntries] = $this->getPlaylistIdentityAndEntries($url);
+                $playlists[] = [
+                    'url' => $url,
+                    'folder' => self::safeName(sprintf('%s - %s', $plUploader, $plTitle)),
+                    'entries' => $plEntries,
+                ];
             } catch (RuntimeException $e) {
                 $this->io->error($e->getMessage());
-                continue;
+                $failed[] = "$url — failed to fetch playlist info";
             }
+            $fetchBar->advance();
+        }
 
-            $plFolder = self::safeName(sprintf('%s - %s', $plUploader, $plTitle));
+        $fetchBar->finish();
+        $output->writeln('');
+
+        $totalTracks = array_sum(array_map(static fn(array $p) => count($p['entries']), $playlists));
+        $this->io->text(
+            sprintf(
+                'Found %d playlists, %d tracks total. Starting downloads...',
+                count($playlists),
+                $totalTracks
+            )
+        );
+
+        $overallBar = new ProgressBar($output, $totalTracks * 2);
+        $overallBar->setFormat(' Overall: %percent:3s%% [%bar%] remaining: %remaining% %message%');
+        $overallBar->setMessage('');
+        $overallBar->start();
+        $output->writeln('');
+
+        foreach ($playlists as $playlistIdx => $playlist) {
+            $url = $playlist['url'];
+            $plFolder = $playlist['folder'];
+            $plEntries = $playlist['entries'];
+
+            $this->io->section(sprintf('[%d/%d] %s', $playlistIdx + 1, count($playlists), $url));
             $this->io->text("Playlist: $plFolder");
 
             $commonArgs = [
@@ -211,29 +249,77 @@ class SoundCloudDownloadCommand extends BaseCommand
                 ...array_map('escapeshellarg', ['--output', $originalOutTpl]),
                 ...array_map('escapeshellarg', $dlArgs),
                 '--print',
-                'filename',
+                escapeshellarg('SEEN:%(title)s'),
                 '--print',
-                'after_move:filepath',
+                escapeshellarg('after_move:DONE:%(id)s'),
                 escapeshellarg($url),
             ];
 
             $this->io->text('Downloading originals...');
-            [$exit] = $this->runCmd(implode(' ', $ytCmd));
+            $seenCount = 0;
+            $newCount = 0;
+            $overallBar->setMessage('downloading...');
+            [$exit] = $this->runCmd(
+                implode(' ', $ytCmd),
+                function (string $line) use ($overallBar, &$seenCount, &$newCount): void {
+                    if (str_starts_with($line, 'SEEN:')) {
+                        $overallBar->setMessage(substr($line, 5));
+                        $overallBar->advance();
+                        $seenCount++;
+                    } elseif (str_starts_with($line, 'DONE:')) {
+                        $newCount++;
+                    }
+                }
+            );
+            $overallBar->setMessage('');
+            $this->io->text(
+                sprintf(
+                    'Download: %d new, %d already in archive',
+                    $newCount,
+                    $seenCount - $newCount
+                )
+            );
             if ($exit !== 0) {
                 $this->io->warning("yt-dlp exited with code $exit for originals; continuing.");
+                $failed[] = "$plFolder — yt-dlp exit code $exit";
             }
 
             foreach ($formatDirs as $d) {
                 if (!is_dir($d) && !@mkdir($d, 0777, true) && !is_dir($d)) {
                     $this->io->error("Failed to create directory: $d");
+                    $failed[] = "$plFolder — failed to create directory $d";
+                    $overallBar->advance(count($plEntries));
                     continue 2;
                 }
             }
 
             $m3uEntries = ['original' => [], 'mp3' => [], 'wav' => [], 'flac' => []];
 
+            $metaExts = ['json', 'jpg', 'jpeg', 'png', 'webp', 'vtt'];
+
+            $convBar = null;
+            if ($plEntries !== []) {
+                $convBar = new ProgressBar($output, count($plEntries));
+                $convBar->setFormat(
+                    ' Tracks:    %current%/%max% [%bar%] %percent:3s%% remaining: %remaining% %message%'
+                );
+                $convBar->setMessage('');
+                $convBar->start();
+            }
+
             foreach ($plEntries as $entry) {
-                $matches = glob($originalLibDir.DIRECTORY_SEPARATOR.$entry['id'].' - *.*', GLOB_NOSORT);
+                $overallBar->advance();
+                if ($convBar !== null) {
+                    $convBar->setMessage($entry['title'] ?? '');
+                    $convBar->advance();
+                }
+                $all = glob($originalLibDir.DIRECTORY_SEPARATOR.$entry['id'].' - *.*', GLOB_NOSORT) ?: [];
+                $matches = array_values(
+                    array_filter(
+                        $all,
+                        static fn(string $f) => !in_array(strtolower(pathinfo($f, PATHINFO_EXTENSION)), $metaExts, true)
+                    )
+                );
                 if (!$matches || !is_file($matches[0])) {
                     continue;
                 }
@@ -260,6 +346,11 @@ class SoundCloudDownloadCommand extends BaseCommand
                 }
             }
 
+            if ($convBar !== null) {
+                $convBar->finish();
+                $output->writeln('');
+            }
+
             foreach (['mp3', 'wav', 'flac'] as $fmt) {
                 if (!in_array($fmt, $formatsRequested, true)) {
                     continue;
@@ -280,6 +371,13 @@ class SoundCloudDownloadCommand extends BaseCommand
             if ($this->pauseBetween > 0) {
                 sleep($this->pauseBetween);
             }
+        }
+
+        $overallBar->finish();
+        $output->writeln('');
+
+        if ($failed !== []) {
+            $this->io->warning(array_merge(['The following playlists had errors:'], $failed));
         }
 
         $this->io->success('All done.');
