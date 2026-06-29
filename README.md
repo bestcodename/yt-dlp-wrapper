@@ -11,10 +11,15 @@ A set of CLI tools for SoundCloud playlist downloading and USB stick setup, buil
 
 ## Requirements
 
-- [ddev](https://ddev.readthedocs.io/en/stable/) — all other dependencies (PHP, yt-dlp, ffmpeg, Ventoy, disk tools) are
-  installed automatically on `ddev start`
+All commands are run via the CLI (terminal / command prompt).
+
+- [Docker](https://docs.ddev.com/en/stable/users/install/docker-installation/) — required by ddev
+- [ddev](https://docs.ddev.com/en/stable/users/install/ddev-installation/) — all other dependencies (PHP, yt-dlp,
+  ffmpeg, Ventoy, disk tools) are installed automatically on `ddev start`
 
 ## Setup
+
+> **Install all requirements above before proceeding.**
 
 ```bash
 ddev start
