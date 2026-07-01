@@ -600,17 +600,25 @@ class SoundCloudDownloadCommand extends BaseCommand
     private static function readTagsFromInfoJson(string $path): array
     {
         $j = json_decode((string)file_get_contents($path), true);
-        if (!is_array($j)) {
-            return [];
-        }
 
+        return is_array($j) ? self::mapInfoJsonToTags($j) : [];
+    }
+
+    /**
+     * Map a decoded yt-dlp .info.json to ffmpeg tags. Pure — unit-testable.
+     *
+     * @param array<string, mixed> $json
+     * @return array{title: string, artist: string, album: string, genre: string, comment: string, date: string}
+     */
+    private static function mapInfoJsonToTags(array $json): array
+    {
         return [
-            'title' => (string)($j['title'] ?? ''),
-            'artist' => (string)($j['uploader'] ?? ($j['artist'] ?? '')),
-            'album' => (string)($j['playlist_title'] ?? ($j['album'] ?? '')),
-            'genre' => (string)($j['genre'] ?? ''),
-            'comment' => (string)($j['description'] ?? ''),
-            'date' => (string)($j['upload_date'] ?? ''),
+            'title' => (string)($json['title'] ?? ''),
+            'artist' => (string)($json['uploader'] ?? ($json['artist'] ?? '')),
+            'album' => (string)($json['playlist_title'] ?? ($json['album'] ?? '')),
+            'genre' => (string)($json['genre'] ?? ''),
+            'comment' => (string)($json['description'] ?? ''),
+            'date' => (string)($json['upload_date'] ?? ''),
         ];
     }
 
@@ -628,57 +636,24 @@ class SoundCloudDownloadCommand extends BaseCommand
             return null;
         }
 
-        $cmd = [$this->ffmpegBin, '-y', '-nostdin', '-hide_banner', '-loglevel', 'warning', '-i', $sourcePath];
-        $hasCover = $coverPath && is_file($coverPath) && in_array($format, ['mp3', 'flac'], true);
-        if ($hasCover) {
-            $cmd[] = '-i';
-            $cmd[] = $coverPath;
-        }
-
-        match ($format) {
-            'mp3' => $cmd = array_merge($cmd, [
-                '-map',
-                '0:a:0',
-                ...($hasCover ? ['-map', '1:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic'] : []),
-                '-c:a',
-                'libmp3lame',
-                '-q:a',
-                $this->mp3Quality,
-                '-id3v2_version',
-                '3',
-            ]),
-            'flac' => $cmd = array_merge($cmd, [
-                '-map',
-                '0:a:0',
-                ...($hasCover ? ['-map', '1:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic'] : []),
-                '-c:a',
-                'flac',
-            ]),
-            'wav' => $cmd = array_merge($cmd, ['-map', '0:a:0', '-c:a', 'pcm_s16le']),
-            default => null,
-        };
-        if ($format === null) {
-            return null;
-        }
+        // Cover art is embedded only for mp3/flac (see buildFfmpegArgs); ignore it otherwise.
+        $cover = ($coverPath !== null && is_file($coverPath)) ? $coverPath : null;
 
         // Normalize sample rates the export target rejects (anything outside 44.1/48/96 kHz).
         // Resample to the nearest supported rate >= source (quality-preserving), capped at 96 kHz.
         $srcRate = $this->probeSampleRate($sourcePath);
         $targetRate = $srcRate !== null ? self::targetSampleRate($srcRate) : 44100;
-        if ($targetRate !== null) {
-            $cmd = array_merge($cmd, ['-ar', (string)$targetRate]);
-        }
 
-        foreach (['title', 'artist', 'album', 'genre', 'comment'] as $k) {
-            if (!empty($tags[$k])) {
-                $cmd[] = '-metadata';
-                $cmd[] = "$k={$tags[$k]}";
-            }
-        }
-        if (!empty($tags['date']) && preg_match('/^\d{4}/', $tags['date'], $m)) {
-            $cmd = array_merge($cmd, ['-metadata', "date=$m[0]", '-metadata', "year=$m[0]"]);
-        }
-        $cmd[] = $targetPath;
+        $cmd = self::buildFfmpegArgs(
+            $this->ffmpegBin,
+            $this->mp3Quality,
+            $sourcePath,
+            $targetPath,
+            $format,
+            $tags,
+            $cover,
+            $targetRate,
+        );
 
         $cmdStr = implode(' ', array_map(static fn($p) => escapeshellarg((string)$p), $cmd));
         [$exit] = $this->runCmd($cmdStr, fn() => null);
@@ -727,11 +702,93 @@ class SoundCloudDownloadCommand extends BaseCommand
         return 96000; // source above 96 kHz → cap at highest supported
     }
 
+    /**
+     * Build the ffmpeg command for one conversion. Pure — no I/O — so it is unit-testable.
+     *
+     * Only the source audio stream (`0:a:0`) is mapped, never the source's own video/cover
+     * stream: copying an embedded cover into a WAV container makes ffmpeg fail
+     * ("Conversion failed!"). Cover art is (re-)attached from $coverPath for mp3/flac only.
+     *
+     * @param array<string, string> $tags title/artist/album/genre/comment/date
+     * @param ?string $coverPath validated cover file, or null to skip embedding
+     * @param ?int $targetRate resample target (-ar), or null to keep native rate
+     * @return list<string>
+     */
+    private static function buildFfmpegArgs(
+        string $ffmpegBin,
+        string $mp3Quality,
+        string $sourcePath,
+        string $targetPath,
+        string $format,
+        array $tags,
+        ?string $coverPath,
+        ?int $targetRate,
+    ): array {
+        $hasCover = $coverPath !== null && in_array($format, ['mp3', 'flac'], true);
+
+        $cmd = [$ffmpegBin, '-y', '-nostdin', '-hide_banner', '-loglevel', 'warning', '-i', $sourcePath];
+        if ($hasCover) {
+            $cmd[] = '-i';
+            $cmd[] = $coverPath;
+        }
+
+        $cmd = match ($format) {
+            'mp3' => array_merge($cmd, [
+                '-map',
+                '0:a:0',
+                ...($hasCover ? ['-map', '1:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic'] : []),
+                '-c:a',
+                'libmp3lame',
+                '-q:a',
+                $mp3Quality,
+                '-id3v2_version',
+                '3',
+            ]),
+            'flac' => array_merge($cmd, [
+                '-map',
+                '0:a:0',
+                ...($hasCover ? ['-map', '1:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic'] : []),
+                '-c:a',
+                'flac',
+            ]),
+            'wav' => array_merge($cmd, ['-map', '0:a:0', '-c:a', 'pcm_s16le']),
+            default => $cmd,
+        };
+
+        if ($targetRate !== null) {
+            $cmd = array_merge($cmd, ['-ar', (string)$targetRate]);
+        }
+
+        foreach (['title', 'artist', 'album', 'genre', 'comment'] as $k) {
+            if (!empty($tags[$k])) {
+                $cmd[] = '-metadata';
+                $cmd[] = "$k={$tags[$k]}";
+            }
+        }
+        if (!empty($tags['date']) && preg_match('/^\d{4}/', $tags['date'], $m)) {
+            $cmd = array_merge($cmd, ['-metadata', "date=$m[0]", '-metadata', "year=$m[0]"]);
+        }
+        $cmd[] = $targetPath;
+
+        return $cmd;
+    }
+
     private static function relativePath(string $from, string $to): string
     {
         $from = str_replace('\\', '/', realpath($from) ?: $from);
         $to = str_replace('\\', '/', realpath($to) ?: $to);
-        $fromParts = explode('/', rtrim(is_dir($from) ? $from : dirname($from), '/'));
+        $fromDir = rtrim(is_dir($from) ? $from : dirname($from), '/');
+
+        return self::relativeFromParts($fromDir, $to);
+    }
+
+    /**
+     * Compute a relative path between two already-normalized absolute paths (both use '/',
+     * $fromDir is a directory). Pure — no filesystem access — so it is unit-testable.
+     */
+    private static function relativeFromParts(string $fromDir, string $to): string
+    {
+        $fromParts = explode('/', $fromDir);
         $toParts = explode('/', $to);
         while (count($fromParts) && count($toParts) && $fromParts[0] === $toParts[0]) {
             array_shift($fromParts);

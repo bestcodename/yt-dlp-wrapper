@@ -1,6 +1,9 @@
 1. Testing
-    1. Add missing tests — broaden coverage beyond the current pure-helper unit tests (`ensureConverted`/ffmpeg arg
-       building, `probeSampleRate`, download/convert flow in `SoundCloudDownloadCommand`, and `UsbSetupCommand`).
+    1. Add missing tests — broaden coverage beyond the current pure-helper unit tests.
+        - DONE: ffmpeg arg building (`buildFfmpegArgs`), `mapInfoJsonToTags`, `relativeFromParts`, and `UsbSetupCommand`
+          pure logic (`parseChecksum`, `classifyDownloadLine`, `shouldRejectAsHtml`, `parseLastContentType`).
+        - TODO: process-dependent paths (`runCmd`, `execute`, `probeSampleRate`, download/convert/mount flow) still need
+          an injectable `ProcessRunner` seam before they can be unit-tested; consider extracting one.
     2. add github action to automatically run tests on every push
 
 2. usb:setup

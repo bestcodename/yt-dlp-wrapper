@@ -728,7 +728,7 @@ class UsbSetupCommand extends BaseCommand
         if ($exit !== 0 || trim($sums) === '') {
             throw new RuntimeException('Failed to fetch SHA256SUMS.');
         }
-        $expected = $this->parseChecksum($sums, $filename);
+        $expected = self::parseChecksum($sums, $filename);
         if ($expected === null) {
             throw new RuntimeException("No checksum found for $filename in SHA256SUMS.");
         }
@@ -766,7 +766,7 @@ class UsbSetupCommand extends BaseCommand
         return $dest;
     }
 
-    private function parseChecksum(string $sumsContent, string $filename): ?string
+    private static function parseChecksum(string $sumsContent, string $filename): ?string
     {
         foreach (explode("\n", $sumsContent) as $line) {
             $parts = preg_split('/\s+/', trim($line), 2);
@@ -878,20 +878,41 @@ class UsbSetupCommand extends BaseCommand
 
         $result = ['http' => [], 'torrent' => [], 'local' => [], 'invalid' => []];
         foreach ($lines as $line) {
-            if (preg_match('#^https?://#i', $line)) {
-                $result['http'][] = $line;
-            } elseif (preg_match('#^(magnet:|urn:btmh:)#i', $line)) {
-                $result['torrent'][] = $line;
-            } elseif (str_ends_with($line, '/**') && is_dir(substr($line, 0, -3))) {
-                $result['local'][] = ['path' => substr($line, 0, -3), 'recursive' => true];
-            } elseif (is_file($line) || is_dir($line)) {
-                $result['local'][] = ['path' => $line, 'recursive' => false];
+            $c = self::classifyDownloadLine($line, 'is_file', 'is_dir');
+            if ($c['type'] === 'local') {
+                $result['local'][] = ['path' => $c['path'], 'recursive' => $c['recursive']];
             } else {
-                $result['invalid'][] = $line;
+                $result[$c['type']][] = $line;
             }
         }
 
         return $result;
+    }
+
+    /**
+     * Classify one downloads-file line. Pure except for the injected $isFile/$isDir probes,
+     * so the URL/torrent/recursive-suffix logic is unit-testable with stub callables.
+     *
+     * @param callable(string): bool $isFile
+     * @param callable(string): bool $isDir
+     * @return array{type: 'http'|'torrent'|'local'|'invalid', path: string, recursive: bool}
+     */
+    private static function classifyDownloadLine(string $line, callable $isFile, callable $isDir): array
+    {
+        if (preg_match('#^https?://#i', $line)) {
+            return ['type' => 'http', 'path' => $line, 'recursive' => false];
+        }
+        if (preg_match('#^(magnet:|urn:btmh:)#i', $line)) {
+            return ['type' => 'torrent', 'path' => $line, 'recursive' => false];
+        }
+        if (str_ends_with($line, '/**') && $isDir(substr($line, 0, -3))) {
+            return ['type' => 'local', 'path' => substr($line, 0, -3), 'recursive' => true];
+        }
+        if ($isFile($line) || $isDir($line)) {
+            return ['type' => 'local', 'path' => $line, 'recursive' => false];
+        }
+
+        return ['type' => 'invalid', 'path' => $line, 'recursive' => false];
     }
 
     /**
@@ -965,7 +986,7 @@ class UsbSetupCommand extends BaseCommand
             @unlink($dest);
             throw new RuntimeException("Failed to download $url");
         }
-        if ($contentType !== null && preg_match('#^text/#i', $contentType)) {
+        if (self::shouldRejectAsHtml($contentType)) {
             @unlink($dest);
             throw new RuntimeException(
                 "Refusing $url — server returned Content-Type \"$contentType\" instead of a binary file ".
@@ -984,14 +1005,34 @@ class UsbSetupCommand extends BaseCommand
             return null;
         }
 
+        return self::parseLastContentType(file($headerFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
+    }
+
+    /**
+     * Return the LAST Content-Type value across header lines (curl -D accumulates headers over
+     * redirects, so the final response's type is the one that matters). Pure — unit-testable.
+     *
+     * @param string[] $headerLines
+     */
+    private static function parseLastContentType(array $headerLines): ?string
+    {
         $type = null;
-        foreach (file($headerFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+        foreach ($headerLines as $line) {
             if (preg_match('/^content-type:\s*(.+)$/i', trim($line), $m)) {
                 $type = trim($m[1]);
             }
         }
 
         return $type;
+    }
+
+    /**
+     * A binary download must not have a text/* Content-Type — that signals a login/session-gated
+     * HTML page rather than the installer. Pure — unit-testable.
+     */
+    private static function shouldRejectAsHtml(?string $contentType): bool
+    {
+        return $contentType !== null && preg_match('#^text/#i', $contentType) === 1;
     }
 
     private function installVentoy(
