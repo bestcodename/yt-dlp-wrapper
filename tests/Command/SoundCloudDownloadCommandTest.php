@@ -56,6 +56,57 @@ final class SoundCloudDownloadCommandTest extends TestCase
         ];
     }
 
+    public function testCountArchivedCountsOnlyKnownIds(): void
+    {
+        $entries = [
+            ['id' => '30523920', 'title' => 'A'],
+            ['id' => '25970122', 'title' => 'B'],
+            ['id' => '999275440', 'title' => 'C'],
+        ];
+        $archivedIds = ['30523920' => true, '25970122' => true, 'unrelated' => true];
+
+        $method = new ReflectionMethod(SoundCloudDownloadCommand::class, 'countArchived');
+
+        self::assertSame(2, $method->invoke(null, $entries, $archivedIds));
+    }
+
+    public function testCountArchivedEmptyArchiveIsZero(): void
+    {
+        $entries = [
+            ['id' => '30523920', 'title' => 'A'],
+        ];
+
+        $method = new ReflectionMethod(SoundCloudDownloadCommand::class, 'countArchived');
+
+        self::assertSame(0, $method->invoke(null, $entries, []));
+    }
+
+    public function testLoadArchiveIdsMissingFileIsEmpty(): void
+    {
+        $method = new ReflectionMethod(SoundCloudDownloadCommand::class, 'loadArchiveIds');
+
+        self::assertSame([], $method->invoke(null, '/nonexistent/archive/original.txt'));
+    }
+
+    public function testLoadArchiveIdsParsesLastToken(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'arch');
+        file_put_contents(
+            $file,
+            "soundcloud 30523920\nsoundcloud 25970122\n\n  youtube dQw4w9WgXcQ  \n"
+        );
+
+        $method = new ReflectionMethod(SoundCloudDownloadCommand::class, 'loadArchiveIds');
+        /** @var array<string, true> $ids */
+        $ids = $method->invoke(null, $file);
+        unlink($file);
+
+        self::assertSame(
+            ['30523920' => true, '25970122' => true, 'dQw4w9WgXcQ' => true],
+            $ids
+        );
+    }
+
     #[DataProvider('sleepRequestsProvider')]
     public function testResolveSleepRequests(string $raw, float $min, float $max): void
     {

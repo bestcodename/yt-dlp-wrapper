@@ -44,6 +44,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `soundcloud:download` — conversions now resample tracks whose sample rate is outside 44.1/48/96 kHz to the nearest
   supported rate ≥ source (capped at 96 kHz), fixing failed/broken exports for FLAC/ALAC/WAV/AIFF at odd rates and
   streaming/video-container sources; source rate is detected via `ffprobe` (`FFPROBE_BIN`, defaults to `ffprobe`)
+- `soundcloud:download` — dropped `--add-metadata` from the originals download. It made yt-dlp remux the original to
+  write tags, which failed (`Postprocessing: Conversion failed!`) for WAV/AIFF sources carrying an embedded cover
+  image (the WAV muxer rejects the video stream), leaving those tracks unarchived, unconverted, and missing from the
+  library/M3U8s on every run. Per-format metadata and cover art are already re-embedded by the conversion step from the
+  `.info.json`/`.jpg` sidecars, so final MP3/WAV/FLAC outputs are unaffected
+- `soundcloud:download` — the per-playlist summary no longer always reports `0 already in archive`. yt-dlp filters
+  already-archived tracks during playlist enumeration (before any `--print` stage), so skipped tracks emit no output;
+  the count is now derived by diffing the playlist against a snapshot of the download archive taken before the run.
+  The summary also gained a `N failed` suffix for tracks that were neither downloaded nor previously archived (e.g.
+  DRM-protected or geo-restricted). Covered by new `loadArchiveIds`/`countArchived` unit tests
 
 ## [0.2.0] - 2026-02-24
 
