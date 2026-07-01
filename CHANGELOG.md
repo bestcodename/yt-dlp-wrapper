@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Broadened unit-test coverage: extracted behavior-preserving pure helpers and tested them —
+  `SoundCloudDownloadCommand::buildFfmpegArgs` (locks in audio-only `0:a:0` mapping, cover-for-mp3/flac-only, `-ar`
+  resample selection, and metadata args), `mapInfoJsonToTags`, `relativeFromParts`; and
+  `UsbSetupCommand::parseChecksum`,
+  `classifyDownloadLine` (http/torrent/local/recursive/invalid), `shouldRejectAsHtml`, `parseLastContentType`. Added
+  `tests/Command/UsbSetupCommandTest.php`
 - PHPUnit test suite (`phpunit.xml`, `tests/`) covering the pure conversion/rate-selection, sleep-request, and
   filename-sanitization helpers; `composer test` script and `phpunit/phpunit` dev dependency
 - `UsbSetup.php` — installs Ventoy (MBR partition table, FAT32 data partition), copies a Debian live ISO, and sets up
