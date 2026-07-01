@@ -49,6 +49,16 @@ ddev exec sudo bin/console usb:setup
 ddev exec bin/console list
 ```
 
+## Development
+
+Unit tests use PHPUnit. The ddev post-start hook runs `composer install --no-dev`, so dev dependencies are stripped
+on every `ddev start`/`ddev restart` — re-install them before running the suite:
+
+```bash
+ddev composer install            # re-adds phpunit (dev deps)
+ddev exec vendor/bin/phpunit     # or: ddev exec composer test
+```
+
 ---
 
 ## soundcloud:download
@@ -63,6 +73,8 @@ files.
 - Conversions (MP3/WAV/FLAC) are done locally from the cached original — no re-downloading for format changes.
 - Per-playlist M3U8 files reference the shared library with relative paths — no duplicate audio on disk, and each
   playlist can be imported independently into Rekordbox.
+- Conversions normalize the sample rate: rates outside 44.1/48/96 kHz are resampled to the nearest supported rate ≥
+  the source (capped at 96 kHz), so odd-rate FLAC/ALAC/WAV/AIFF and streaming/video-container sources export cleanly.
 
 ### Quick start
 
@@ -95,6 +107,7 @@ OUTPUT_DIR=./downloads
 
 YTDLP_BIN=/usr/local/bin/yt-dlp
 FFMPEG_BIN=ffmpeg
+FFPROBE_BIN=ffprobe             # used to detect source sample rate for resampling
 
 # Formats: original, mp3, wav, flac (comma-separated)
 FORMATS=original,mp3,wav,flac

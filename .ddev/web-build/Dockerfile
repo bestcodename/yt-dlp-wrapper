@@ -9,7 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     psmisc \
     python3-pip \
     util-linux \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf "$(command -v mkfs.exfat)" /usr/local/bin/mkexfatfs \
+    && ln -sf "$(command -v fsck.exfat)" /usr/local/bin/exfatfsck
 
 RUN set -e \
     && VENTOY_VER=$(curl -fsSL https://api.github.com/repos/ventoy/Ventoy/releases/latest \

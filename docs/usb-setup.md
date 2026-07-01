@@ -8,14 +8,19 @@ persistence for it.
 All tools — `dosfstools`, `e2fsprogs`, `util-linux`, and the latest Ventoy release — are installed automatically via
 `.ddev/web-build/Dockerfile` when you run `ddev start`.
 
-| Tool               | Package                                   | Purpose                      |
-|--------------------|-------------------------------------------|------------------------------|
-| `mkfs.fat`         | dosfstools                                | Format partition 1 as FAT32  |
-| `mkfs.ext4`        | e2fsprogs                                 | Format persistence image     |
-| `fallocate`        | util-linux                                | Allocate persistence file    |
-| `mount` / `umount` | util-linux                                | Loop-mount persistence image |
-| `lsblk`            | util-linux                                | List block devices           |
-| `Ventoy2Disk.sh`   | ventoy (auto-downloaded to `/opt/ventoy`) | Install Ventoy bootloader    |
+| Tool                       | Package                                   | Purpose                                      |
+|----------------------------|-------------------------------------------|----------------------------------------------|
+| `mkfs.fat`                 | dosfstools                                | Format partition 1 as FAT32                  |
+| `mkfs.ext4`                | e2fsprogs                                 | Format persistence image                     |
+| `mkfs.exfat` / `mkexfatfs` | exfatprogs                                | exFAT formatting (Ventoy install / reformat) |
+| `fallocate`                | util-linux                                | Allocate persistence file                    |
+| `mount` / `umount`         | util-linux                                | Loop-mount persistence image                 |
+| `lsblk`                    | util-linux                                | List block devices                           |
+| `Ventoy2Disk.sh`           | ventoy (auto-downloaded to `/opt/ventoy`) | Install Ventoy bootloader                    |
+
+> Ventoy's `ventoy_lib.sh` invokes the legacy `exfat-utils` binary name `mkexfatfs`, which modern `exfatprogs`
+> replaces with `mkfs.exfat`. `.ddev/web-build/Dockerfile` symlinks `mkfs.exfat` → `mkexfatfs` (and `fsck.exfat` →
+> `exfatfsck`) so Ventoy install no longer fails with `mkexfatfs: command not found`.
 
 ## Usage
 
@@ -188,12 +193,12 @@ ddev exec bin/console usb:setup --help
 
 ```json
 {
-    "persistence": [
-        {
-            "image": "/debian-live-12.iso",
-            "backend": "/persistence.dat"
-        }
-    ]
+  "persistence": [
+    {
+      "image": "/debian-live-12.iso",
+      "backend": "/persistence.dat"
+    }
+  ]
 }
 ```
 

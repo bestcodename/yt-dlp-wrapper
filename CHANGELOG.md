@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- PHPUnit test suite (`phpunit.xml`, `tests/`) covering the pure conversion/rate-selection, sleep-request, and
+  filename-sanitization helpers; `composer test` script and `phpunit/phpunit` dev dependency
 - `UsbSetup.php` — installs Ventoy (MBR partition table, FAT32 data partition), copies a Debian live ISO, and sets up
   Ventoy persistence via a loop-mounted ext4 image and `ventoy.json`
 - `docs/soundcloud-downloader.md` — full ddev command reference, `.env` options, output layout, Rekordbox import guide,
@@ -33,6 +35,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `.gitignore` no longer blanket-excludes `config/`; only personal/machine-specific files (`usb-setup.json`,
   `playlists.txt`, `cookies.txt`, and anything under `usb-manual-downloads/`) stay gitignored
+
+### Fixed
+
+- `usb:setup` — Ventoy no longer fails with `mkexfatfs: command not found`; `.ddev/web-build/Dockerfile` symlinks the
+  modern `exfatprogs` binaries (`mkfs.exfat` → `mkexfatfs`, `fsck.exfat` → `exfatfsck`) to the legacy names Ventoy
+  probes for
+- `soundcloud:download` — conversions now resample tracks whose sample rate is outside 44.1/48/96 kHz to the nearest
+  supported rate ≥ source (capped at 96 kHz), fixing failed/broken exports for FLAC/ALAC/WAV/AIFF at odd rates and
+  streaming/video-container sources; source rate is detected via `ffprobe` (`FFPROBE_BIN`, defaults to `ffprobe`)
 
 ## [0.2.0] - 2026-02-24
 

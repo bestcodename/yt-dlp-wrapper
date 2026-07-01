@@ -19,6 +19,7 @@ class SoundCloudDownloadCommand extends BaseCommand
     private ?string $cookiesFile;
     private string $extractorRetries;
     private string $ffmpegBin;
+    private string $ffprobeBin;
     private SymfonyStyle $io;
     private ?string $limitRate;
     private string $mp3Quality;
@@ -51,6 +52,7 @@ class SoundCloudDownloadCommand extends BaseCommand
         // E-category: env override or ddev-installed default
         $this->ytDlpBin = getenv('YTDLP_BIN') ?: 'yt-dlp';
         $this->ffmpegBin = getenv('FFMPEG_BIN') ?: 'ffmpeg';
+        $this->ffprobeBin = getenv('FFPROBE_BIN') ?: 'ffprobe';
         $this->mp3Quality = getenv('MP3_QUALITY') !== false ? (string)getenv('MP3_QUALITY') : '0';
         $formatsStr = getenv('FORMATS') ?: 'original,mp3,wav,flac';
 
@@ -606,6 +608,14 @@ class SoundCloudDownloadCommand extends BaseCommand
             return null;
         }
 
+        // Normalize sample rates the export target rejects (anything outside 44.1/48/96 kHz).
+        // Resample to the nearest supported rate >= source (quality-preserving), capped at 96 kHz.
+        $srcRate = $this->probeSampleRate($sourcePath);
+        $targetRate = $srcRate !== null ? self::targetSampleRate($srcRate) : 44100;
+        if ($targetRate !== null) {
+            $cmd = array_merge($cmd, ['-ar', (string)$targetRate]);
+        }
+
         foreach (['title', 'artist', 'album', 'genre', 'comment'] as $k) {
             if (!empty($tags[$k])) {
                 $cmd[] = '-metadata';
@@ -621,6 +631,47 @@ class SoundCloudDownloadCommand extends BaseCommand
         [$exit] = $this->runCmd($cmdStr, fn() => null);
 
         return $exit === 0 ? $targetPath : null;
+    }
+
+    private function probeSampleRate(string $path): ?int
+    {
+        if (!is_file($path)) {
+            return null;
+        }
+        $args = [
+            '-v',
+            'error',
+            '-select_streams',
+            'a:0',
+            '-show_entries',
+            'stream=sample_rate',
+            '-of',
+            'default=nk=1:nw=1',
+            $path,
+        ];
+        $cmd = escapeshellcmd($this->ffprobeBin).' '.implode(' ', array_map('escapeshellarg', $args));
+        [$exit, $out] = $this->runCmd($cmd, fn() => null);
+        if ($exit !== 0) {
+            return null;
+        }
+        $rate = (int)trim($out);
+
+        return $rate > 0 ? $rate : null;
+    }
+
+    public static function targetSampleRate(int $src): ?int
+    {
+        $supported = [44100, 48000, 96000];
+        if (in_array($src, $supported, true)) {
+            return null; // already supported → leave native rate
+        }
+        foreach ($supported as $rate) {
+            if ($rate >= $src) {
+                return $rate; // nearest supported >= source (quality-preserving)
+            }
+        }
+
+        return 96000; // source above 96 kHz → cap at highest supported
     }
 
     private static function relativePath(string $from, string $to): string
