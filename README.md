@@ -75,6 +75,8 @@ files.
   playlist can be imported independently into Rekordbox.
 - Conversions normalize the sample rate: rates outside 44.1/48/96 kHz are resampled to the nearest supported rate ≥
   the source (capped at 96 kHz), so odd-rate FLAC/ALAC/WAV/AIFF and streaming/video-container sources export cleanly.
+- Each playlist prints a `Download: N new, N already in archive, N failed` summary, with the archive count derived from
+  the dedup archive (see the [downloader docs](docs/soundcloud-downloader.md#download-summary)).
 
 ### Quick start
 

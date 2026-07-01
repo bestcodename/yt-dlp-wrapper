@@ -214,7 +214,12 @@ class SoundCloudDownloadCommand extends BaseCommand
                 '--ignore-errors',
                 '--no-abort-on-error',
                 '--yes-playlist',
-                '--add-metadata',
+                // NOTE: no --add-metadata here. It makes yt-dlp remux the original to
+                // write tags, which fails ("Conversion failed!") for WAV/AIFF sources
+                // that carry an embedded cover image (the WAV muxer rejects the video
+                // stream), leaving those tracks unarchived and unconverted. Metadata and
+                // cover art are re-embedded per format by ensureConverted() from the
+                // .info.json / .jpg sidecars, so this is redundant anyway.
                 '--extractor-retries',
                 $this->extractorRetries,
                 '--retry-sleep',
@@ -257,30 +262,33 @@ class SoundCloudDownloadCommand extends BaseCommand
                 escapeshellarg($url),
             ];
 
+            // yt-dlp filters already-archived playlist entries during enumeration,
+            // before any --print stage fires, so they emit no output at all. Snapshot
+            // the archive before downloading and diff against it to count skips.
+            $preArchivedIds = self::loadArchiveIds($archiveFile);
+
             $this->io->text('Downloading originals...');
-            $seenCount = 0;
             $newCount = 0;
             $overallBar->setMessage('downloading...');
             [$exit] = $this->runCmd(
                 implode(' ', $ytCmd),
-                function (string $line) use ($overallBar, &$seenCount, &$newCount): void {
+                function (string $line) use ($overallBar, &$newCount): void {
                     if (str_starts_with($line, 'SEEN:')) {
                         $overallBar->setMessage(substr($line, 5));
                         $overallBar->advance();
-                        $seenCount++;
                     } elseif (str_starts_with($line, 'DONE:')) {
                         $newCount++;
                     }
                 }
             );
             $overallBar->setMessage('');
-            $this->io->text(
-                sprintf(
-                    'Download: %d new, %d already in archive',
-                    $newCount,
-                    $seenCount - $newCount
-                )
-            );
+            $archivedCount = self::countArchived($plEntries, $preArchivedIds);
+            $failedCount = max(0, count($plEntries) - $newCount - $archivedCount);
+            $summary = sprintf('Download: %d new, %d already in archive', $newCount, $archivedCount);
+            if ($failedCount > 0) {
+                $summary .= sprintf(', %d failed', $failedCount);
+            }
+            $this->io->text($summary);
             if ($exit !== 0) {
                 $this->io->warning("yt-dlp exited with code $exit for originals; continuing.");
                 $failed[] = "$plFolder — yt-dlp exit code $exit";
@@ -542,6 +550,51 @@ class SoundCloudDownloadCommand extends BaseCommand
         $name = preg_replace('/\s+/', ' ', $name);
 
         return trim((string)$name);
+    }
+
+    /**
+     * Parse a yt-dlp --download-archive file into a set of recorded ids.
+     * Each line looks like "<extractor> <id>"; the id is the last token.
+     *
+     * @return array<string, true>
+     */
+    private static function loadArchiveIds(string $archiveFile): array
+    {
+        if (!is_file($archiveFile)) {
+            return [];
+        }
+        $ids = [];
+        foreach (preg_split('/\R/', (string)file_get_contents($archiveFile)) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $parts = preg_split('/\s+/', $line) ?: [];
+            $id = (string)end($parts);
+            if ($id !== '') {
+                $ids[$id] = true;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Count how many playlist entries are already present in the archive id set.
+     *
+     * @param list<array{id: string, title: string}> $entries
+     * @param array<string, true> $archivedIds
+     */
+    private static function countArchived(array $entries, array $archivedIds): int
+    {
+        $count = 0;
+        foreach ($entries as $entry) {
+            if (isset($archivedIds[$entry['id']])) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     private static function readTagsFromInfoJson(string $path): array

@@ -182,6 +182,21 @@ downloads/
     <Uploader> - <Playlist Title> - flac.m3u8
 ```
 
+## Download summary
+
+After downloading each playlist's originals, the command prints a one-line summary:
+
+```
+Download: 3 new, 30 already in archive, 2 failed
+```
+
+- **new** — tracks freshly downloaded this run.
+- **already in archive** — tracks skipped because they are already recorded in `.archive/original.txt` (the shared
+  dedup archive). yt-dlp drops these during playlist enumeration and prints nothing for them, so the count is derived
+  by diffing the playlist against a snapshot of the archive taken *before* the run.
+- **failed** — tracks that were neither downloaded nor already archived (e.g. DRM-protected or geo-restricted); the
+  suffix is omitted when zero. yt-dlp prints the underlying `ERROR:` lines for these.
+
 ## Sample-rate normalization
 
 Some export targets (and DJ software) reject audio whose sample rate is outside 44.1/48/96 kHz, which previously broke
@@ -206,10 +221,12 @@ independently; all audio is stored once in the shared library.
 
 ## Troubleshooting
 
-| Symptom                          | Fix                                                                                                                           |
-|----------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| 403/429 errors                   | Add `COOKIES_FILE` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env`                                        |
-| Missing thumbnails / metadata    | Update yt-dlp: `ddev exec pip install -U yt-dlp`                                                                              |
-| Want to add a format later       | Re-run with updated `FORMATS` — originals are cached, only new conversions run                                                |
-| yt-dlp not found                 | `ddev exec pip install yt-dlp` or add it to `.ddev/web-build/Dockerfile`                                                      |
-| Export rejects an odd-rate track | Fixed automatically — see [Sample-rate normalization](#sample-rate-normalization); delete the stale converted file and re-run |
+| Symptom                                                             | Fix                                                                                                                           |
+|---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
+| 403/429 errors                                                      | Add `COOKIES_FILE` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env`                                        |
+| Missing thumbnails / metadata                                       | Update yt-dlp: `ddev exec pip install -U yt-dlp`                                                                              |
+| Want to add a format later                                          | Re-run with updated `FORMATS` — originals are cached, only new conversions run                                                |
+| yt-dlp not found                                                    | `ddev exec pip install yt-dlp` or add it to `.ddev/web-build/Dockerfile`                                                      |
+| Export rejects an odd-rate track                                    | Fixed automatically — see [Sample-rate normalization](#sample-rate-normalization); delete the stale converted file and re-run |
+| Summary always says `0 already in archive`                          | Fixed — the count is now derived from the download archive, see [Download summary](#download-summary)                         |
+| A WAV track keeps failing with `Postprocessing: Conversion failed!` | Fixed — `--add-metadata` was dropped; it choked on WAV/AIFF sources with an embedded cover. Re-run to pull the track in       |
