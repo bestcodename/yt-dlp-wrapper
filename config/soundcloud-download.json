@@ -1,0 +1,4 @@
+{
+  "input_file": "config/playlists.txt",
+  "output_dir": "./downloads"
+}

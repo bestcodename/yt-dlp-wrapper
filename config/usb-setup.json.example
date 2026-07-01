@@ -1,0 +1,8 @@
+{
+    "persistence_mib": 4090,
+    "cache_dir": ".cache",
+    "iso_source": "download",
+    "iso_variant": "kde",
+    "install_ventoy": true,
+    "download_sources": "config/usb-downloads.txt"
+}

@@ -1,0 +1,12 @@
+# config/playlists.txt.example
+#
+# Copy this file to config/playlists.txt and replace the sample entries below with your own
+# SoundCloud/YouTube playlist (or "likes") URLs. One URL per line; blank lines and `#`-prefixed
+# comment lines (e.g. section headers) are ignored.
+
+# Example section
+https://soundcloud.com/example-user/sets/example-playlist
+https://www.youtube.com/playlist?list=EXAMPLE_PLAYLIST_ID
+
+# Likes (large)
+https://soundcloud.com/example-user/likes

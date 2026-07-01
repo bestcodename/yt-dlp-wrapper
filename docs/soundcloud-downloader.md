@@ -11,6 +11,17 @@ per-playlist M3U8 files.
 | yt-dlp | latest      | `ddev exec pip install yt-dlp` |
 | ffmpeg | any recent  | `ddev exec apt install ffmpeg` |
 
+## Configuration
+
+`config/playlists.txt` (your playlist/likes URLs) and `config/cookies.txt` (exported browser cookies, only needed for
+authenticated downloads) are gitignored since they're personal data. Copy the checked-in starting points before
+first use:
+
+```bash
+cp config/playlists.txt.example config/playlists.txt
+cp config/cookies.txt.example config/cookies.txt   # optional
+```
+
 ## ddev commands
 
 All commands run inside the `web` container via `ddev exec`. Paths are relative to the project root.
