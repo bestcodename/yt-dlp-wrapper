@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use FilesystemIterator;
+use RecursiveDirectoryIterator;
+use RecursiveIteratorIterator;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -52,6 +55,13 @@ class UsbSetupCommand extends BaseCommand
                 null,
                 InputOption::VALUE_NONE,
                 'Update existing setup: skip steps that are already correct, use Ventoy -U'
+            )
+            ->addOption(
+                'downloads-file',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Path to file listing software URLs and/or local file/directory paths to copy onto the stick '.
+                '(magnet:/urn:btmh: reserved for future torrent support)'
             );
     }
 
@@ -71,6 +81,9 @@ class UsbSetupCommand extends BaseCommand
             'persistence-size'
         ) : 2048;
         $ventoyBinHint = $input->getOption('ventoy-bin') !== null ? (string)$input->getOption('ventoy-bin') : null;
+        $downloadsFile = $input->getOption('downloads-file') !== null ? (string)$input->getOption(
+            'downloads-file'
+        ) : null;
         $skipConfirm = (bool)$input->getOption('yes') || !$input->isInteractive();
         $isUpdate = (bool)$input->getOption('update');
         $installVentoy = true;
@@ -79,10 +92,11 @@ class UsbSetupCommand extends BaseCommand
         $helper = $this->getHelper('question');
 
         $config = $this->loadConfig();
-        $isoCacheDir = $config['iso_cache_dir'] ?? dirname(__DIR__, 2).'/.cache/iso';
+        $cacheDir = $config['cache_dir'] ?? dirname(__DIR__, 2).'/.cache';
 
         $isoSrc = null;
         $variant = null;
+        $deviceDesc = null;
 
         if ($input->isInteractive()) {
             if ($device === null) {
@@ -104,6 +118,21 @@ class UsbSetupCommand extends BaseCommand
 
                     return Command::FAILURE;
                 }
+            }
+
+            // Check/record the device's vendor+model name as early as possible, right after the
+            // device is finalized, so a mismatch warning appears before any further prompts.
+            $deviceDesc = $this->checkAndRecordDeviceName(
+                $input,
+                $output,
+                $helper,
+                $device,
+                $config,
+                true,
+                $skipConfirm
+            );
+            if ($deviceDesc === null) {
+                return Command::SUCCESS;
             }
 
             // Warn immediately if any partitions of this device are mounted on the host
@@ -150,7 +179,7 @@ class UsbSetupCommand extends BaseCommand
             if ($debianIso === null) {
                 $savedIsoSrc = $config['iso_source'] ?? 'download';
                 $q = new ChoiceQuestion(
-                    "<question>Debian ISO:</question> [<info>$savedIsoSrc</info>] <comment>(downloads are cached in .cache/iso/)</comment>",
+                    "<question>Debian ISO:</question> [<info>$savedIsoSrc</info>] <comment>(downloads are cached in .cache/)</comment>",
                     ['download', 'local path', 'skip'],
                     $savedIsoSrc
                 );
@@ -206,10 +235,21 @@ class UsbSetupCommand extends BaseCommand
                 $persistenceMib = (int)($ans ?? $persistDefault);
             }
 
+            if ($downloadsFile === null) {
+                $savedDownloads = $config['download_sources'] ?? 'config/usb-downloads.txt';
+                $q = new Question(
+                    "<question>Software downloads file</question> (http(s) URLs copied to /software/ on the stick; '-' to skip) [<info>$savedDownloads</info>]: ",
+                    $savedDownloads
+                );
+                $ans = $helper->ask($input, $output, $q);
+                $ans = $ans !== null ? trim($ans) : '';
+                $downloadsFile = ($ans === '' || $ans === '-') ? null : $ans;
+            }
+
             $updates = [
                 'device' => $device,
                 'persistence_mib' => $persistenceMib,
-                'iso_cache_dir' => $isoCacheDir,
+                'cache_dir' => $cacheDir,
             ];
             if ($isoSrc !== null) {
                 $updates['iso_source'] = $isoSrc;
@@ -221,11 +261,14 @@ class UsbSetupCommand extends BaseCommand
                 $updates['iso_path'] = $debianIso;
             }
             $updates['install_ventoy'] = $installVentoy;
+            if ($downloadsFile !== null) {
+                $updates['download_sources'] = $downloadsFile;
+            }
             $this->saveConfig(array_merge($config, $updates));
 
             if ($isoSrc === 'download' && $variant !== null) {
                 try {
-                    $debianIso = $this->downloadDebianIso($variant, $output, $isoCacheDir);
+                    $debianIso = $this->downloadDebianIso($variant, $output, $cacheDir);
                 } catch (RuntimeException $e) {
                     $this->io->error($e->getMessage());
 
@@ -249,15 +292,29 @@ class UsbSetupCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        $info = $this->lsblkInfo($device);
-        $deviceDesc = $device;
-        if (!empty($info)) {
-            $parts = array_filter([$info['vendor'] ?? '', $info['model'] ?? '', $info['size'] ?? '']);
-            $deviceDesc .= ' ('.implode(' ', $parts).')';
+        if ($deviceDesc === null) {
+            $deviceDesc = $this->checkAndRecordDeviceName(
+                $input,
+                $output,
+                $helper,
+                $device,
+                $config,
+                $input->isInteractive(),
+                $skipConfirm
+            );
+            if ($deviceDesc === null) {
+                return Command::SUCCESS;
+            }
         }
 
         if ($debianIso !== null && !is_file($debianIso)) {
             $this->io->error("ISO file not found: $debianIso");
+
+            return Command::FAILURE;
+        }
+
+        if ($downloadsFile !== null && !is_file($downloadsFile)) {
+            $this->io->error("Downloads file not found: $downloadsFile");
 
             return Command::FAILURE;
         }
@@ -286,6 +343,9 @@ class UsbSetupCommand extends BaseCommand
         if ($debianIso) {
             $rows[] = ['Debian ISO', $debianIso];
             $rows[] = ['Persistence', "{$persistenceMib} MiB (ext4, Ventoy persistence plugin)"];
+        }
+        if ($downloadsFile !== null) {
+            $rows[] = ['Software downloads', "queued from $downloadsFile"];
         }
         $this->io->table(['Option', 'Value'], $rows);
 
@@ -321,6 +381,17 @@ class UsbSetupCommand extends BaseCommand
             }
         }
 
+        $softwareFiles = [];
+        if ($downloadsFile !== null) {
+            try {
+                $softwareFiles = $this->prepareSoftwareDownloads($downloadsFile, $output, $cacheDir);
+            } catch (RuntimeException $e) {
+                $this->io->error($e->getMessage());
+
+                return Command::FAILURE;
+            }
+        }
+
         $dataPartition = $device.'1';
 
         // Step 1: Ventoy (-U to update in place, -I for full install)
@@ -351,33 +422,40 @@ class UsbSetupCommand extends BaseCommand
             $this->io->text('Ventoy install skipped.');
         }
 
-        if ($debianIso !== null) {
+        if ($debianIso !== null || $softwareFiles !== []) {
             $mount = null;
             try {
                 $mount = $this->mountPartition($dataPartition, $output);
                 $this->io->text("Mounted $dataPartition at $mount.");
 
-                // Step 3: ISO (skip if same file already on stick)
-                $isoName = basename($debianIso);
-                if ($isUpdate && $this->isoMatchesOnStick($mount, $isoName, $debianIso)) {
-                    $this->io->text('ISO already on stick — skipping copy.');
-                } else {
-                    $isoName = $this->copyIso($debianIso, $mount, $output);
+                if ($debianIso !== null) {
+                    // Step 3: ISO (skip if same file already on stick)
+                    $isoName = basename($debianIso);
+                    if ($isUpdate && $this->isoMatchesOnStick($mount, $isoName, $debianIso)) {
+                        $this->io->text('ISO already on stick — skipping copy.');
+                    } else {
+                        $isoName = $this->copyIso($debianIso, $mount, $output);
+                    }
+
+                    // Step 4: Persistence (skip if already valid ext4 at correct size)
+                    $persistDat = 'persistence.dat';
+                    if ($isUpdate && $this->isPersistenceValid($mount, $persistenceMib)) {
+                        $this->io->text('persistence.dat already valid — skipping creation.');
+                    } else {
+                        $persistDat = $this->createPersistenceFile($mount, $persistenceMib, $output);
+                    }
+
+                    // Step 5: ventoy.json (skip if entry already correct)
+                    if ($isUpdate && $this->ventoyJsonHasEntry($mount, $isoName)) {
+                        $this->io->text('ventoy.json already has correct entry — skipping.');
+                    } else {
+                        $this->writeVentoyJson($mount, $isoName, $persistDat);
+                    }
                 }
 
-                // Step 4: Persistence (skip if already valid ext4 at correct size)
-                $persistDat = 'persistence.dat';
-                if ($isUpdate && $this->isPersistenceValid($mount, $persistenceMib)) {
-                    $this->io->text('persistence.dat already valid — skipping creation.');
-                } else {
-                    $persistDat = $this->createPersistenceFile($mount, $persistenceMib, $output);
-                }
-
-                // Step 5: ventoy.json (skip if entry already correct)
-                if ($isUpdate && $this->ventoyJsonHasEntry($mount, $isoName)) {
-                    $this->io->text('ventoy.json already has correct entry — skipping.');
-                } else {
-                    $this->writeVentoyJson($mount, $isoName, $persistDat);
+                // Step 6: Software downloads (skip individually if already on stick, in update mode)
+                if ($softwareFiles !== []) {
+                    $this->copySoftwareFiles($softwareFiles, $mount, $output, $isUpdate);
                 }
 
                 $this->runCmd('sync', false, $output);
@@ -400,7 +478,13 @@ class UsbSetupCommand extends BaseCommand
                 'Boot from the stick and select the Debian ISO in the Ventoy menu.',
                 'Persistence is active for that ISO via /ventoy/ventoy.json.',
             ]);
-        } else {
+        }
+        if ($softwareFiles !== []) {
+            $this->io->text(
+                sprintf('%d software installer(s) copied to /software/ on the stick.', count($softwareFiles))
+            );
+        }
+        if ($debianIso === null && $softwareFiles === []) {
             $this->io->text("Copy ISO files onto $dataPartition (FAT32) to boot them with Ventoy.");
         }
 
@@ -522,6 +606,81 @@ class UsbSetupCommand extends BaseCommand
         return [$exit, $stdout];
     }
 
+    private function checkAndRecordDeviceName(
+        InputInterface $input,
+        OutputInterface $output,
+        QuestionHelper $helper,
+        string $device,
+        array $config,
+        bool $interactive,
+        bool $skipConfirm
+    ): ?string {
+        $info = $this->lsblkInfo($device);
+        $deviceDesc = $device;
+        if (!empty($info)) {
+            $parts = array_filter([$info['vendor'] ?? '', $info['model'] ?? '', $info['size'] ?? '']);
+            $deviceDesc .= ' ('.implode(' ', $parts).')';
+        }
+
+        $currentDeviceName = trim(implode(' ', array_filter([
+            $info['tran'] ?? '',
+            trim((string)($info['vendor'] ?? '')),
+            trim((string)($info['model'] ?? '')),
+        ])));
+
+        $sameDeviceAsSaved = ($config['device'] ?? null) === $device;
+        $hasSavedDeviceName = array_key_exists('device_name', $config);
+        $savedDeviceName = $config['device_name'] ?? null;
+
+        $warned = false;
+        if ($sameDeviceAsSaved && !$hasSavedDeviceName) {
+            $this->io->warning(
+                "No recorded name on file for $device from a previous run (currently detected as ".
+                "\"$currentDeviceName\") — cannot verify this is still the same physical drive."
+            );
+            $warned = true;
+        } elseif (
+            $sameDeviceAsSaved
+            && $savedDeviceName !== null
+            && $savedDeviceName !== ''
+            && $savedDeviceName !== $currentDeviceName
+        ) {
+            $this->io->warning(
+                "Device $device now shows as \"$currentDeviceName\", but was \"$savedDeviceName\" last time — ".
+                'device letters can shift across reboots/replugging.'
+            );
+            $warned = true;
+        }
+
+        if ($warned && $interactive && !$skipConfirm) {
+            $q = new ConfirmationQuestion('Continue with this device anyway? [yes/NO] ', false, '/^yes$/i');
+            if (!$helper->ask($input, $output, $q)) {
+                $this->io->note('Aborted.');
+
+                return null;
+            }
+        }
+
+        if ($interactive) {
+            $this->saveConfig(array_merge($this->loadConfig(), ['device_name' => $currentDeviceName]));
+        }
+
+        return $deviceDesc;
+    }
+
+    private function lsblkInfo(string $device): array
+    {
+        [$exit, $out] = $this->runCmd(
+            'lsblk -J -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL,MOUNTPOINT '.escapeshellarg($device).' 2>/dev/null'
+        );
+        if ($exit !== 0 || trim($out) === '') {
+            return [];
+        }
+        $json = json_decode($out, true);
+
+        return is_array($json) ? ($json['blockdevices'][0] ?? []) : [];
+    }
+
     private function getMountedPartitions(string $device): array
     {
         // /proc/1/mounts reflects the HOST's mount table when pid:host is set in docker-compose;
@@ -629,19 +788,6 @@ class UsbSetupCommand extends BaseCommand
         return strtolower(explode(' ', trim($out))[0]);
     }
 
-    private function lsblkInfo(string $device): array
-    {
-        [$exit, $out] = $this->runCmd(
-            'lsblk -J -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL,MOUNTPOINT '.escapeshellarg($device).' 2>/dev/null'
-        );
-        if ($exit !== 0 || trim($out) === '') {
-            return [];
-        }
-        $json = json_decode($out, true);
-
-        return is_array($json) ? ($json['blockdevices'][0] ?? []) : [];
-    }
-
     private function requireBin(string $bin): string
     {
         [$exit, $out] = $this->runCmd('which '.escapeshellarg($bin).' 2>/dev/null');
@@ -674,6 +820,178 @@ class UsbSetupCommand extends BaseCommand
             "Ventoy not found. Install it or pass --ventoy-bin /path/to/Ventoy2Disk.sh.\n".
             '  Download: https://github.com/ventoy/Ventoy/releases'
         );
+    }
+
+    private function prepareSoftwareDownloads(string $downloadsFile, OutputInterface $output, string $cacheDir): array
+    {
+        $classified = $this->parseDownloadsFile($downloadsFile);
+
+        foreach ($classified['torrent'] as $line) {
+            $this->io->note("Torrent link recognized but not yet supported (planned for a future release): $line");
+        }
+        foreach ($classified['invalid'] as $line) {
+            $this->io->warning(
+                'Skipping invalid downloads-file line (expected http(s)://, magnet:, urn:btmh:, '.
+                "an existing local file/directory path, or a 'dir/**' recursive directory path): $line"
+            );
+        }
+
+        $files = $this->collectLocalFiles($classified['local']);
+        if ($files !== []) {
+            $this->io->text(sprintf('Found %d locally-provided file(s).', count($files)));
+        }
+
+        if ($classified['http'] === [] && $files === []) {
+            $this->io->text('No software downloads queued.');
+
+            return [];
+        }
+
+        foreach ($classified['http'] as $url) {
+            try {
+                $dest = $this->downloadSoftwareFile($url, $output, $cacheDir);
+                $files[] = ['source' => $dest, 'relative' => basename($dest)];
+            } catch (RuntimeException $e) {
+                $this->io->warning("Skipping $url — ".$e->getMessage());
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * @return array{
+     *     http: string[],
+     *     torrent: string[],
+     *     local: array<array{path: string, recursive: bool}>,
+     *     invalid: string[]
+     * }
+     */
+    private function parseDownloadsFile(string $path): array
+    {
+        $lines = array_values(
+            array_filter(
+                array_map('trim', file($path)),
+                static fn($l) => $l !== '' && $l[0] !== '#'
+            )
+        );
+
+        $result = ['http' => [], 'torrent' => [], 'local' => [], 'invalid' => []];
+        foreach ($lines as $line) {
+            if (preg_match('#^https?://#i', $line)) {
+                $result['http'][] = $line;
+            } elseif (preg_match('#^(magnet:|urn:btmh:)#i', $line)) {
+                $result['torrent'][] = $line;
+            } elseif (str_ends_with($line, '/**') && is_dir(substr($line, 0, -3))) {
+                $result['local'][] = ['path' => substr($line, 0, -3), 'recursive' => true];
+            } elseif (is_file($line) || is_dir($line)) {
+                $result['local'][] = ['path' => $line, 'recursive' => false];
+            } else {
+                $result['invalid'][] = $line;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<array{path: string, recursive: bool}> $entries
+     *
+     * @return array<array{source: string, relative: string}>
+     */
+    private function collectLocalFiles(array $entries): array
+    {
+        $files = [];
+        foreach ($entries as $entry) {
+            $path = $entry['path'];
+            if (!is_dir($path)) {
+                $files[] = ['source' => $path, 'relative' => basename($path)];
+                continue;
+            }
+
+            if (!$entry['recursive']) {
+                foreach (glob(rtrim($path, '/').'/*') ?: [] as $child) {
+                    if (is_file($child)) {
+                        $files[] = ['source' => $child, 'relative' => basename($child)];
+                    }
+                }
+                continue;
+            }
+
+            $root = rtrim($path, '/');
+            $iterator = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($iterator as $fileInfo) {
+                if (!$fileInfo->isFile()) {
+                    continue;
+                }
+                $relative = ltrim(substr($fileInfo->getPathname(), strlen($root)), '/');
+                $files[] = ['source' => $fileInfo->getPathname(), 'relative' => $relative];
+            }
+        }
+
+        return $files;
+    }
+
+    private function downloadSoftwareFile(string $url, OutputInterface $output, string $cacheDir): string
+    {
+        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+            throw new RuntimeException("Cannot create download cache directory: $cacheDir");
+        }
+
+        $filename = basename((string)parse_url($url, PHP_URL_PATH));
+        if ($filename === '' || $filename === '/') {
+            throw new RuntimeException("Cannot determine filename from URL: $url");
+        }
+        $dest = rtrim($cacheDir, '/').'/'.$filename;
+
+        if (is_file($dest) && filesize($dest) > 0) {
+            $this->io->text("Already cached (no checksum available to verify) — skipping: $filename");
+
+            return $dest;
+        }
+
+        $headerFile = $dest.'.headers';
+        $this->io->text("Downloading $filename ...");
+        [$exit] = $this->runCmd(
+            'curl -fL -# -D '.escapeshellarg($headerFile).' -o '.escapeshellarg($dest).' '.escapeshellarg($url),
+            true,
+            $output
+        );
+        $contentType = $this->lastContentType($headerFile);
+        @unlink($headerFile);
+        if ($exit !== 0) {
+            @unlink($dest);
+            throw new RuntimeException("Failed to download $url");
+        }
+        if ($contentType !== null && preg_match('#^text/#i', $contentType)) {
+            @unlink($dest);
+            throw new RuntimeException(
+                "Refusing $url — server returned Content-Type \"$contentType\" instead of a binary file ".
+                '(likely a login/session-gated page, not a direct download link).'
+            );
+        }
+
+        $this->io->text("Downloaded: $dest");
+
+        return $dest;
+    }
+
+    private function lastContentType(string $headerFile): ?string
+    {
+        if (!is_file($headerFile)) {
+            return null;
+        }
+
+        $type = null;
+        foreach (file($headerFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            if (preg_match('/^content-type:\s*(.+)$/i', trim($line), $m)) {
+                $type = trim($m[1]);
+            }
+        }
+
+        return $type;
     }
 
     private function installVentoy(
@@ -791,10 +1109,12 @@ class UsbSetupCommand extends BaseCommand
     {
         $dest = rtrim($mountPoint, '/').'/'.basename($isoPath);
         $isoSizeMb = filesize($isoPath) / 1048576;
-        $this->io->text(sprintf('Copying %s to USB (%d MiB)...', basename($isoPath), (int)round($isoSizeMb)));
         if ($isoSizeMb > 4090) {
-            $this->io->warning("ISO exceeds ~4 GiB FAT32 single-file limit ({$isoSizeMb} MiB). This WILL fail.");
+            throw new RuntimeException(
+                "ISO exceeds ~4 GiB FAT32 single-file limit ({$isoSizeMb} MiB) — refusing to copy."
+            );
         }
+        $this->io->text(sprintf('Copying %s to USB (%d MiB)...', basename($isoPath), (int)round($isoSizeMb)));
         [$exit] = $this->runCmd(
             'cp --no-preserve=all '.escapeshellarg($isoPath).' '.escapeshellarg($dest).' 2>&1',
             true,
@@ -917,6 +1237,52 @@ class UsbSetupCommand extends BaseCommand
         $json = json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n";
         file_put_contents($jsonPath, $json);
         $this->io->text(['Written /ventoy/ventoy.json:', $json]);
+    }
+
+    /**
+     * @param array<array{source: string, relative: string}> $files
+     */
+    private function copySoftwareFiles(
+        array $files,
+        string $mountPoint,
+        OutputInterface $output,
+        bool $isUpdate
+    ): void {
+        $dir = rtrim($mountPoint, '/').'/software';
+        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+            throw new RuntimeException('Cannot create /software directory on USB.');
+        }
+
+        foreach ($files as $file) {
+            $source = $file['source'];
+            $relative = $file['relative'];
+            $destDir = dirname($dir.'/'.$relative);
+            if (!is_dir($destDir) && !mkdir($destDir, 0755, true) && !is_dir($destDir)) {
+                $this->io->warning("Cannot create destination directory for $relative on USB — skipping.");
+                continue;
+            }
+            if ($isUpdate && $this->isoMatchesOnStick($dir, $relative, $source)) {
+                $this->io->text("$relative already on stick — skipping copy.");
+                continue;
+            }
+            $sizeMb = filesize($source) / 1048576;
+            if ($sizeMb > 4090) {
+                $this->io->warning(
+                    "Skipping $relative — exceeds ~4 GiB FAT32 single-file limit ({$sizeMb} MiB)."
+                );
+                continue;
+            }
+            $this->io->text(sprintf('Copying %s to /software/ (%d MiB)...', $relative, (int)round($sizeMb)));
+            $dest = $dir.'/'.$relative;
+            [$exit] = $this->runCmd(
+                'cp --no-preserve=all '.escapeshellarg($source).' '.escapeshellarg($dest).' 2>&1',
+                true,
+                $output
+            );
+            if ($exit !== 0) {
+                $this->io->warning("Failed to copy $relative to USB — skipping.");
+            }
+        }
     }
 
     private function unmountAndClean(string $mount): void

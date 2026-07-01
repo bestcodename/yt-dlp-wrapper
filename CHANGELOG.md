@@ -14,6 +14,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and troubleshooting table
 - `docs/usb-setup.md` — USB setup command reference, step-by-step explanation, partition layout, FAT32 limitations, and
   boot instructions
+- `usb:setup` — `--downloads-file` option and shared `config/usb-setup.json` `download_sources` entry to copy
+  additional software (Rekordbox, T-Racks 8x8 Matrix Digital Processor Editor, Ableton Live trial) onto the stick's
+  `/software/` folder; `magnet:`/`urn:btmh:` link syntax is recognized and reserved for future torrent support but
+  not yet downloaded
+- `usb:setup` downloads file now also accepts local file/directory paths (copied as-is, no download), including a
+  default `config/usb-manual-downloads/` folder for anything downloaded by hand (account-gated vendor pages, e.g.
+  Traktor Pro, Traktor DJ2, Resolume Arena)
+- `usb:setup` rejects downloads whose response has a `text/*` Content-Type (e.g. a login/session-gated HTML page)
+  instead of silently copying it onto the stick as if it were the installer
+- `usb:setup` downloads-file local directory entries support a `/**` suffix for recursive scanning (e.g.
+  `config/usb-manual-downloads/**`), preserving each file's subfolder path under `/software/` on the stick
+- `config/usb-setup.json.example`, `config/playlists.txt.example`, `config/cookies.txt.example` — checked-in
+  starting points for the gitignored personal/machine-specific config files; `config/usb-downloads.txt` and
+  `config/soundcloud-download.json` (no personal data in either) are now committed directly
+
+### Changed
+
+- `.gitignore` no longer blanket-excludes `config/`; only personal/machine-specific files (`usb-setup.json`,
+  `playlists.txt`, `cookies.txt`, and anything under `usb-manual-downloads/`) stay gitignored
 
 ## [0.2.0] - 2026-02-24
 

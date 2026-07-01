@@ -1,6 +1,13 @@
 /.cache/
 /.claude/
-/config/
-/cookies.txt
+/config/*
+!/config/usb-downloads.txt
+!/config/usb-setup.json.example
+!/config/soundcloud-download.json
+!/config/playlists.txt.example
+!/config/cookies.txt.example
+!/config/usb-manual-downloads
+/config/usb-manual-downloads/*
+!/config/usb-manual-downloads/.gitkeep
 /downloads/
 /vendor/

@@ -1,0 +1,72 @@
+# config/usb-downloads.txt
+#
+# Software to copy onto the USB stick's /software/ folder during `usb:setup`.
+# One link per line. Blank lines and lines starting with `#` are ignored.
+#
+# Supported line types:
+#   https://...   or   http://...   — downloaded now via curl and copied onto the stick.
+#   magnet:...                      — recognized but NOT downloaded yet (torrent support is
+#   urn:btmh:...                      planned, see TODO.md). These lines are safe to add now
+#                                      for future use; they are currently just logged and skipped.
+#   /a/local/file.exe                — an existing local file: copied onto the stick as-is,
+#                                      no download involved.
+#   /a/local/directory/               — an existing local directory: every file directly
+#                                      inside it (non-recursive) is copied onto the stick.
+#   /a/local/directory/**             — same, but scanned recursively (all subfolders too),
+#                                      preserving each file's subfolder path under /software/
+#                                      on the stick (so same-named files in different
+#                                      subfolders don't collide).
+#                                      Relative paths resolve against the current working
+#                                      directory (i.e. the project root when run via
+#                                      `bin/console`).
+#
+# NOTE: unlike the Debian ISO download, there is no published checksum for downloaded files,
+# so they are NOT integrity-verified — only cached by filename/size. usb:setup does reject
+# responses with a text/* Content-Type (e.g. login/session-gated HTML pages), so a gated URL
+# now fails loudly with a warning instead of silently copying garbage onto the stick.
+
+# Default folder for anything you download manually (e.g. Traktor Pro via Native Access,
+# Traktor DJ2 via chip.de, Resolume Arena from resolume.com/download) — just drop installer
+# files in here, no URL needed. Everything directly inside is copied to /software/.
+config/usb-manual-downloads/
+
+# T-Racks 8x8 Matrix Digital Processor Editor
+https://fast-images.static-thomann.de/pics/atg/atgdata/file/misc/t_racks_8x8_matrix_digital_processor_editor_v1_0_setup.exe
+
+# Rekordbox — the download page itself is account-gated, but the CDN link below was found to
+# be a real, direct, unauthenticated download (verified: HTTP 200, application/zip, correct
+# size). It's version-pinned (7.2.14) and will need updating by hand when rekordbox releases
+# a new version and the vendor rotates the CDN path. Landing page for reference:
+# https://rekordbox.com/en/download/
+# https://cdn.rekordbox.com/files/20260401164003/Install_rekordbox_x64_7_2_14.zip
+
+# Traktor DJ2 — DISCONTINUED by Native Instruments (as of 2024). No longer offered for new
+# installs via the official channel; existing owners can only reinstall via their own Native
+# Access account. See:
+# https://support.native-instruments.com/hc/en-us/articles/16921462005405-Notes-on-the-Discontinuation-of-Traktor-DJ-2
+# Traktor Pro (below) is Native Instruments' current DJ software and its de facto replacement.
+# Third-party mirror option (unofficial, not vendor-hosted — use at your own judgment):
+# https://www.chip.de/downloads/Traktor-DJ-2_169435068.html
+# CHIP pages offer a plain direct download alongside their own "CHIP-Installer" wrapper —
+# use the plain direct link, not the wrapper, to avoid bundled offers. No confirmed stable
+# .exe URL was found for this line yet; add one here once verified.
+
+# Traktor Pro (trial) — official trial page (requires a free Native Instruments / Native
+# Access account; installer is delivered through Native Access, not a static URL):
+# https://www.native-instruments.com/en/products/traktor/dj-software/traktor-pro-4/free-trial/
+
+# Ableton Live (trial) — the trial page itself emails a session-specific link, but the CDN URL
+# below was found to be a real, direct, unauthenticated download (verified: HTTP 200,
+# application/zip, correct size). It's version-pinned (12.4.2) and will need updating by hand
+# on future Ableton releases. Landing page for reference:
+# https://www.ableton.com/en/trial/
+# https://cdn-downloads.ableton.com/channels/12.4.2/ableton_live_trial_12.4.2_64.zip
+
+# Resolume Arena (trial) — the line below is confirmed NOT a working direct download: it
+# returns HTTP 200 with `content-type: text/html` (a session/cookie-gated page), not the
+# installer. usb:setup's Content-Type check now catches this and skips it with a warning
+# instead of copying the HTML page onto the stick — left active so you'll see that warning
+# as a reminder to replace it once a genuinely direct, unauthenticated URL is found. Landing
+# page for reference:
+# https://www.resolume.com/download/win
+# https://www.resolume.com/download/file?file=Resolume_Arena_7_26_2_rev_8882_Installer.exe

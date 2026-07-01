@@ -25,7 +25,16 @@ All commands are run via the CLI (terminal / command prompt).
 ddev start
 ```
 
-That's it. Composer dependencies are installed automatically via a post-start hook.
+Composer dependencies are installed automatically via a post-start hook.
+
+`config/` is gitignored except for a few shipped defaults and `.example` templates. Copy the templates you need to
+their real (gitignored) names and fill in machine-specific values before first use:
+
+```bash
+cp config/usb-setup.json.example config/usb-setup.json        # optional — usb:setup works without it
+cp config/playlists.txt.example config/playlists.txt          # required by soundcloud:download
+cp config/cookies.txt.example config/cookies.txt               # only needed for authenticated downloads
+```
 
 ## Usage
 
@@ -144,30 +153,46 @@ All required tools (dosfstools, e2fsprogs, util-linux, Ventoy) are installed aut
 ddev exec sudo bin/console usb:setup
 ```
 
-Interactive mode lists detected block devices and prompts for each option. Answers are saved to `.usb-setup.json` and
-pre-filled on the next run.
+Interactive mode lists detected block devices and prompts for each option. Answers are saved to
+`config/usb-setup.json` and pre-filled on the next run.
 
 ### Options
 
-| Flag                 | Short | Default                           | Description                               |
-|----------------------|-------|-----------------------------------|-------------------------------------------|
-| `--device`           |       | prompted                          | Target USB block device (e.g. `/dev/sdb`) |
-| `--debian-iso`       |       | prompted (download or local path) | Debian live ISO                           |
-| `--persistence-size` |       | prompted (default 2048)           | Persistence image size in MiB             |
-| `--ventoy-bin`       |       | auto-detected                     | Path to `Ventoy2Disk.sh`                  |
-| `--yes`              | `-y`  | —                                 | Skip confirmation prompts                 |
-| `--no-interaction`   | `-n`  | —                                 | Require all args via flags, no prompts    |
+| Flag                 | Short | Default                                       | Description                                                   |
+|----------------------|-------|-----------------------------------------------|---------------------------------------------------------------|
+| `--device`           |       | prompted                                      | Target USB block device (e.g. `/dev/sdb`)                     |
+| `--debian-iso`       |       | prompted (download or local path)             | Debian live ISO                                               |
+| `--persistence-size` |       | prompted (default 2048)                       | Persistence image size in MiB                                 |
+| `--ventoy-bin`       |       | auto-detected                                 | Path to `Ventoy2Disk.sh`                                      |
+| `--downloads-file`   |       | prompted (default `config/usb-downloads.txt`) | File listing software URLs/local paths to copy onto the stick |
+| `--yes`              | `-y`  | —                                             | Skip confirmation prompts                                     |
+| `--no-interaction`   | `-n`  | —                                             | Require all args via flags, no prompts                        |
 
 ### ISO download
 
 When prompted, choose **download** to fetch the latest Debian live ISO directly from `cdimage.debian.org`. Available
 variants: `standard`, `gnome`, `kde`, `cinnamon`, `lxde`, `lxqt`, `mate`, `xfce`. Downloaded ISOs are cached in
-`.cache/iso/` and reused on subsequent runs.
+`.cache/` and reused on subsequent runs.
+
+### Software downloads
+
+By default, additional software (Rekordbox, the T-Racks 8x8 Matrix Digital Processor Editor, and an Ableton Live
+trial) can be queued for copying onto the stick's `/software/` folder. Entries are read from
+`config/usb-downloads.txt`, one per line (`#` comments allowed):
+
+- `https://...` / `http://...` — downloaded and copied onto the stick.
+- `magnet:`/`urn:btmh:` — reserved for future torrent support; currently just logged and skipped.
+- A local file or directory path — copied onto the stick as-is, no download needed. The default file already lists
+  `config/usb-manual-downloads/` for anything you download by hand (e.g. Traktor Pro via Native Access, Traktor DJ2
+  via a third-party mirror, Resolume Arena) — just drop the installer in there. Add `/**` to a directory path (e.g.
+  `config/usb-manual-downloads/**`) to scan it recursively, preserving subfolder structure under `/software/`.
+
+Override the file with `--downloads-file`, or type `-` at the prompt to skip software provisioning entirely.
 
 ### Persistent config
 
-Interactive answers are saved to `.usb-setup.json` and used as defaults on the next run. Edit the file directly to
-change the ISO cache directory or other defaults.
+Interactive answers are saved to `config/usb-setup.json` and used as defaults on the next run. Edit the file directly
+to change the cache directory, downloads file, or other defaults.
 
 ---
 

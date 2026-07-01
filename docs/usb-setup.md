@@ -25,15 +25,16 @@ ddev exec sudo bin/console usb:setup [options]
 
 ### Options
 
-| Flag                      | Short | Default                           | Description                                              |
-|---------------------------|-------|-----------------------------------|----------------------------------------------------------|
-| `--device /dev/sdX`       |       | prompted                          | Target USB block device                                  |
-| `--debian-iso /path.iso`  |       | prompted (download or local path) | Debian live ISO to copy onto the stick                   |
-| `--persistence-size 2048` |       | prompted (default 2048)           | Persistence image size in MiB                            |
-| `--ventoy-bin /path`      |       | auto                              | Path to `Ventoy2Disk.sh` (auto-detected)                 |
-| `--yes`                   | `-y`  | —                                 | Skip confirmation prompts                                |
-| `--no-interaction`        | `-n`  | —                                 | Non-interactive: all args required via flags, no prompts |
-| `--help`                  | `-h`  | —                                 | Show full option reference                               |
+| Flag                      | Short | Default                               | Description                                                      |
+|---------------------------|-------|---------------------------------------|------------------------------------------------------------------|
+| `--device /dev/sdX`       |       | prompted                              | Target USB block device                                          |
+| `--debian-iso /path.iso`  |       | prompted (download or local path)     | Debian live ISO to copy onto the stick                           |
+| `--persistence-size 2048` |       | prompted (default 2048)               | Persistence image size in MiB                                    |
+| `--ventoy-bin /path`      |       | auto                                  | Path to `Ventoy2Disk.sh` (auto-detected)                         |
+| `--downloads-file /path`  |       | prompted (`config/usb-downloads.txt`) | File listing software URLs/local paths to copy onto `/software/` |
+| `--yes`                   | `-y`  | —                                     | Skip confirmation prompts                                        |
+| `--no-interaction`        | `-n`  | —                                     | Non-interactive: all args required via flags, no prompts         |
+| `--help`                  | `-h`  | —                                     | Show full option reference                                       |
 
 ## Commands
 
@@ -90,6 +91,14 @@ ddev exec sudo bin/console usb:setup \
   -y -n
 ```
 
+### Provision default software onto the stick
+
+```bash
+ddev exec sudo bin/console usb:setup \
+  --device /dev/sdX \
+  --downloads-file config/usb-downloads.txt
+```
+
 ### Custom Ventoy binary location
 
 ```bash
@@ -104,6 +113,44 @@ Or via environment variable:
 ddev exec env VENTOY_BIN=/opt/ventoy/Ventoy2Disk.sh \
   sudo bin/console usb:setup --device /dev/sdX
 ```
+
+### Software downloads file
+
+`--downloads-file` (default: `config/usb-downloads.txt`) points at a plain-text list of software to copy onto the
+stick's `/software/` folder — by default Rekordbox, Traktor DJ2, the T-Racks 8x8 Matrix Digital Processor Editor, and
+trial installers for Traktor Pro, Ableton Live, and Resolume Arena (edit the file to fill in the vendor URLs you
+want). One link per line; blank lines and `#` comments are ignored:
+
+- `https://...` / `http://...` — downloaded now (via `curl`) and copied onto the stick.
+- `magnet:...` / `urn:btmh:...` — recognized but **not implemented yet**; torrent support is planned (see
+  `TODO.md`), so these lines are currently logged and skipped.
+- A local file path — copied onto the stick as-is, no download involved.
+- A local directory path — every file directly inside it (non-recursive) is copied onto the stick.
+- A local directory path ending in `/**` — scanned recursively (all subfolders too), preserving each file's
+  subfolder path under `/software/` on the stick, so same-named files in different subfolders don't collide.
+
+Relative local paths resolve against the current working directory (the project root when run via `bin/console`).
+
+Unlike the Debian ISO download, there is no published checksum for these files, so downloads are cached by
+filename/size only — **not** integrity-verified. At the interactive prompt, type `-` to skip software provisioning
+entirely for that run.
+
+Some vendors don't offer a stable, unauthenticated direct-download URL at all (the actual installer link is only
+generated after account login, form submission, or an active browser session/cookies) — `config/usb-downloads.txt`
+documents which of the default entries this affects. `usb:setup` rejects any response with a `text/*` `Content-Type`
+(the signature of a login/session-gated HTML page) with a warning instead of copying it onto the stick, but this
+only catches that one failure mode — always sanity-check a new URL yourself (`curl -I <url>`, expect a binary
+content-type) before adding it.
+
+For software with no working direct-download URL (account-gated vendor pages, e.g. Traktor Pro via Native Access),
+download the installer manually in a browser and drop it into `config/usb-manual-downloads/` — the default
+`config/usb-downloads.txt` already lists that folder as a local directory entry, so `usb:setup` picks up and copies
+anything placed there automatically, no manual mounting needed.
+
+`config/usb-downloads.txt` itself is checked into the repo (it contains no personal data). Interactive answers for
+`usb:setup` more broadly (device, persistence size, ISO source, ...) are saved to `config/usb-setup.json`, which is
+gitignored since it can contain machine-specific values — `config/usb-setup.json.example` is the checked-in starting
+point; copy it to `config/usb-setup.json` if you want pre-filled prompt defaults from a previous run.
 
 ### List available block devices
 
@@ -126,12 +173,14 @@ ddev exec bin/console usb:setup --help
 4. **Creates `persistence.dat`** — allocates a file on the FAT32 partition, formats it as ext4 with label `persistence`,
    and writes `/persistence.conf` (`/ union`) inside so Debian live-boot enables persistence automatically.
 5. **Writes `/ventoy/ventoy.json`** — links the ISO to the persistence backend via Ventoy's persistence plugin.
+6. **Copies queued software installers** — downloads each `http(s)` URL from the downloads file (cached, but not
+   checksum-verified) and copies them into `/software/` on the FAT32 partition.
 
 ## Partition layout after setup
 
 ```
 /dev/sdX       — MBR partition table
-  /dev/sdX1    — FAT32 "VENTOY"  (data: ISOs, persistence.dat, ventoy/)
+  /dev/sdX1    — FAT32 "VENTOY"  (data: ISOs, persistence.dat, ventoy/, software/)
   /dev/sdX2    — Ventoy system partition (do not touch)
 ```
 
@@ -154,6 +203,7 @@ FAT32 limits individual files to **4 GiB − 1 byte**. This affects:
 
 - ISO files larger than ~4 GiB will fail to copy.
 - Persistence images must be kept under ~4090 MiB (the script caps this automatically).
+- The same cap applies to each software installer copied into `/software/`.
 
 If you need larger files, reformat partition 1 manually as exFAT after running the script:
 

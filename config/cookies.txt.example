@@ -1,0 +1,6 @@
+# Netscape HTTP Cookie File
+#
+# Copy this file to config/cookies.txt and replace it with your own exported cookies (e.g. via
+# a browser extension that exports cookies.txt) for sites that require a login/session to
+# download from (private tracks, age-gated content, etc.). Never commit real cookie values —
+# config/cookies.txt is gitignored on purpose since it contains live session/auth data.
