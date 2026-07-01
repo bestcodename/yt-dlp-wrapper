@@ -11,3 +11,4 @@
 !/config/usb-manual-downloads/.gitkeep
 /downloads/
 /vendor/
+/.phpunit.result.cache
