@@ -1,7 +1,7 @@
 {
   "name": "bestcodename/yt-dlp-tools",
   "type": "project",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "require": {
     "php": ">=8.1",
     "symfony/console": "^7.0"
