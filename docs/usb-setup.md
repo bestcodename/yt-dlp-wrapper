@@ -1,7 +1,8 @@
 # USB Setup — Ventoy + Persistent Debian
 
 Installs Ventoy (MBR partition table, FAT32 data partition), optionally copies a Debian live ISO, and configures Ventoy
-persistence for it.
+persistence for it. Can also duplicate an already-set-up stick onto a new one (any size/brand, as long as the used
+payload fits) via `--source-device`.
 
 ## Requirements
 
@@ -16,6 +17,7 @@ All tools — `dosfstools`, `e2fsprogs`, `util-linux`, and the latest Ventoy rel
 | `fallocate`                | util-linux                                | Allocate persistence file                    |
 | `mount` / `umount`         | util-linux                                | Loop-mount persistence image                 |
 | `lsblk`                    | util-linux                                | List block devices                           |
+| `rsync`                    | rsync                                     | Mirror payload when duplicating a stick      |
 | `Ventoy2Disk.sh`           | ventoy (auto-downloaded to `/opt/ventoy`) | Install Ventoy bootloader                    |
 
 > Ventoy's `ventoy_lib.sh` invokes the legacy `exfat-utils` binary name `mkexfatfs`, which modern `exfatprogs`
@@ -30,16 +32,17 @@ ddev exec sudo bin/console usb:setup [options]
 
 ### Options
 
-| Flag                      | Short | Default                               | Description                                                      |
-|---------------------------|-------|---------------------------------------|------------------------------------------------------------------|
-| `--device /dev/sdX`       |       | prompted                              | Target USB block device                                          |
-| `--debian-iso /path.iso`  |       | prompted (download or local path)     | Debian live ISO to copy onto the stick                           |
-| `--persistence-size 2048` |       | prompted (default 2048)               | Persistence image size in MiB                                    |
-| `--ventoy-bin /path`      |       | auto                                  | Path to `Ventoy2Disk.sh` (auto-detected)                         |
-| `--downloads-file /path`  |       | prompted (`config/usb-downloads.txt`) | File listing software URLs/local paths to copy onto `/software/` |
-| `--yes`                   | `-y`  | —                                     | Skip confirmation prompts                                        |
-| `--no-interaction`        | `-n`  | —                                     | Non-interactive: all args required via flags, no prompts         |
-| `--help`                  | `-h`  | —                                     | Show full option reference                                       |
+| Flag                       | Short | Default                               | Description                                                      |
+|----------------------------|-------|---------------------------------------|------------------------------------------------------------------|
+| `--device /dev/sdX`        |       | prompted                              | Target USB block device                                          |
+| `--source-device /dev/sdY` |       | prompted ("Payload" choice)           | Duplicate payload from this already-set-up Ventoy stick          |
+| `--debian-iso /path.iso`   |       | prompted (download or local path)     | Debian live ISO to copy onto the stick                           |
+| `--persistence-size 2048`  |       | prompted (default 2048)               | Persistence image size in MiB                                    |
+| `--ventoy-bin /path`       |       | auto                                  | Path to `Ventoy2Disk.sh` (auto-detected)                         |
+| `--downloads-file /path`   |       | prompted (`config/usb-downloads.txt`) | File listing software URLs/local paths to copy onto `/software/` |
+| `--yes`                    | `-y`  | —                                     | Skip confirmation prompts                                        |
+| `--no-interaction`         | `-n`  | —                                     | Non-interactive: all args required via flags, no prompts         |
+| `--help`                   | `-h`  | —                                     | Show full option reference                                       |
 
 ## Commands
 
@@ -95,6 +98,35 @@ ddev exec sudo bin/console usb:setup \
   --persistence-size 2048 \
   -y -n
 ```
+
+### Duplicate an existing stick
+
+Sets up `/dev/sdX` like the already-configured stick `/dev/sdY`: Ventoy is properly installed on the target (a plain
+file copy cannot make it bootable), then the source's whole data partition — ISO, `/ventoy/ventoy.json`,
+`persistence.dat` **including its user data**, `/software/` — is mirrored with rsync. The source is only ever mounted
+read-only. A free-space preflight aborts before anything is wiped if the source's used payload doesn't fit the
+target, and files over the FAT32 ~4 GiB limit are listed and skipped:
+
+```bash
+ddev exec sudo bin/console usb:setup \
+  --device /dev/sdX \
+  --source-device /dev/sdY
+```
+
+Re-sync a previously duplicated stick after the source changed — an rsync dry run previews what would be added,
+changed, and deleted on the target and asks for confirmation before deletions (`-y` skips that confirmation too):
+
+```bash
+ddev exec sudo bin/console usb:setup \
+  --device /dev/sdX \
+  --source-device /dev/sdY \
+  --update
+```
+
+Explicit `--debian-iso` / `--downloads-file` still apply **additively** on top of the mirrored payload;
+`--persistence-size` is ignored when a `persistence.dat` was carried over from the source (recreating it would
+destroy the duplicated data). Without `--source-device`, the interactive run asks whether the payload should come
+from the configuration or be duplicated from an existing stick.
 
 ### Provision default software onto the stick
 
@@ -180,6 +212,11 @@ ddev exec bin/console usb:setup --help
 5. **Writes `/ventoy/ventoy.json`** — links the ISO to the persistence backend via Ventoy's persistence plugin.
 6. **Copies queued software installers** — downloads each `http(s)` URL from the downloads file (cached, but not
    checksum-verified) and copies them into `/software/` on the FAT32 partition.
+
+With `--source-device`, steps 3–6 are replaced by an rsync mirror of the source stick's data partition (steps 1–2
+still run so the target is actually bootable); explicitly passed ISO/software options are applied additively
+afterwards. The mirror excludes OS artifacts (`System Volume Information`, `.Trash*`, `FOUND.NNN`) and uses
+`--modify-window=1` so FAT's 2-second timestamps don't force full re-copies on `--update`.
 
 ## Partition layout after setup
 

@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `usb:setup` — `--source-device` option (and interactive "Payload" prompt) to duplicate an already-set-up Ventoy
+  stick onto the target: after the normal Ventoy install, the source's data partition (ISO, `ventoy/ventoy.json`,
+  `persistence.dat` including its user data, `/software/`) is mirrored via rsync instead of downloaded/created from
+  configuration; explicitly passed `--debian-iso`/`--downloads-file` still apply additively on top. Includes a
+  free-space preflight (fails before anything is wiped), a read-only source mount, an oversized-file (FAT32 >4 GiB)
+  warning, source/target swap detection via recorded device names, and an `--update` re-sync mode that previews
+  deletions (rsync dry run) and asks for confirmation. New config keys: `payload_source`, `source_device`,
+  `source_device_name`; `rsync` added to the ddev web image
 - Broadened unit-test coverage: extracted behavior-preserving pure helpers and tested them —
   `SoundCloudDownloadCommand::buildFfmpegArgs` (locks in audio-only `0:a:0` mapping, cover-for-mp3/flac-only, `-ar`
   resample selection, and metadata args), `mapInfoJsonToTags`, `relativeFromParts`; and
