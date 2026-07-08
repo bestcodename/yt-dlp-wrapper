@@ -4,5 +4,6 @@
     "iso_source": "download",
     "iso_variant": "kde",
     "install_ventoy": true,
-    "download_sources": "config/usb-downloads.txt"
+    "download_sources": "config/usb-downloads.txt",
+    "payload_source": "configuration"
 }

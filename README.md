@@ -4,10 +4,10 @@ A set of CLI tools for SoundCloud playlist downloading and USB stick setup, buil
 
 ## Tools
 
-| Command               | Description                                                                       |
-|-----------------------|-----------------------------------------------------------------------------------|
-| `soundcloud:download` | Download SoundCloud playlists via yt-dlp, convert to MP3/WAV/FLAC, generate M3U8s |
-| `usb:setup`           | Install Ventoy on a USB stick, optionally copy a Debian live ISO with persistence |
+| Command               | Description                                                                                            |
+|-----------------------|--------------------------------------------------------------------------------------------------------|
+| `soundcloud:download` | Download SoundCloud playlists via yt-dlp, convert to MP3/WAV/FLAC, generate M3U8s                      |
+| `usb:setup`           | Install Ventoy on a USB stick, copy a Debian live ISO with persistence, or duplicate an existing stick |
 
 ## Requirements
 
@@ -159,6 +159,9 @@ stored once in the shared library.
 ## usb:setup
 
 Installs Ventoy (MBR, FAT32) on a USB stick, optionally downloads a Debian live ISO and configures Ventoy persistence.
+Can also duplicate an already-set-up stick onto a new one of any size ≥ the used payload (`--source-device`): Ventoy
+is installed on the target, then the source's data partition (ISO, persistence incl. user data, `/software/`) is
+mirrored via rsync from a read-only mount.
 
 All required tools (dosfstools, e2fsprogs, util-linux, Ventoy) are installed automatically in the ddev container.
 
@@ -176,6 +179,7 @@ Interactive mode lists detected block devices and prompts for each option. Answe
 | Flag                 | Short | Default                                       | Description                                                   |
 |----------------------|-------|-----------------------------------------------|---------------------------------------------------------------|
 | `--device`           |       | prompted                                      | Target USB block device (e.g. `/dev/sdb`)                     |
+| `--source-device`    |       | prompted ("Payload" choice)                   | Duplicate payload from this already-set-up Ventoy stick       |
 | `--debian-iso`       |       | prompted (download or local path)             | Debian live ISO                                               |
 | `--persistence-size` |       | prompted (default 2048)                       | Persistence image size in MiB                                 |
 | `--ventoy-bin`       |       | auto-detected                                 | Path to `Ventoy2Disk.sh`                                      |
