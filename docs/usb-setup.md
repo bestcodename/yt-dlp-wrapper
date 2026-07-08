@@ -128,7 +128,7 @@ want). One link per line; blank lines and `#` comments are ignored:
 
 - `https://...` / `http://...` — downloaded now (via `curl`) and copied onto the stick.
 - `magnet:...` / `urn:btmh:...` — recognized but **not implemented yet**; torrent support is planned (see
-  `TODO.md`), so these lines are currently logged and skipped.
+  [../TODO.md](../TODO.md)), so these lines are currently logged and skipped.
 - A local file path — copied onto the stick as-is, no download involved.
 - A local directory path — every file directly inside it (non-recursive) is copied onto the stick.
 - A local directory path ending in `/**` — scanned recursively (all subfolders too), preserving each file's

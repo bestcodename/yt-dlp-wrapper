@@ -156,7 +156,7 @@ class UsbSetupCommand extends BaseCommand
             // Mode: update existing setup or redo from scratch
             if (!$input->getOption('update')) {
                 $modeLabels = ['update existing setup', 'redo from scratch'];
-                $ventoyDetected = file_exists($device.'2');
+                $ventoyDetected = $this->hasVentoyPartition($device);
                 $modeDefault = $ventoyDetected ? 0 : 1;
                 $q = new ChoiceQuestion(
                     '<question>Mode:</question> [<info>'.$modeLabels[$modeDefault].'</info>]',
@@ -264,7 +264,7 @@ class UsbSetupCommand extends BaseCommand
             if ($downloadsFile !== null) {
                 $updates['download_sources'] = $downloadsFile;
             }
-            $this->saveConfig(array_merge($config, $updates));
+            $this->saveConfig(array_merge($this->loadConfig(), $updates));
 
             if ($isoSrc === 'download' && $variant !== null) {
                 try {
@@ -332,6 +332,11 @@ class UsbSetupCommand extends BaseCommand
             return Command::FAILURE;
         }
 
+        // Ventoy update (-u) is refused on a stick without Ventoy — the flag must follow the
+        // actual stick state, not the chosen mode.
+        $ventoyOnStick = $this->hasVentoyPartition($device);
+        $ventoyUpdate = $isUpdate && $ventoyOnStick;
+
         $this->io->section($isUpdate ? 'USB Setup — Update Summary' : 'USB Setup — Summary');
         $rows = [
             ['Device', $deviceDesc],
@@ -350,7 +355,14 @@ class UsbSetupCommand extends BaseCommand
         $this->io->table(['Option', 'Value'], $rows);
 
         if ($isUpdate) {
-            $this->io->note("Updating $deviceDesc — data partition is preserved.");
+            if ($installVentoy && !$ventoyOnStick) {
+                $this->io->warning(
+                    "Ventoy is not present on $device — a full Ventoy install is required. ".
+                    'The partition table will be recreated and ISO/persistence/software re-copied.'
+                );
+            } else {
+                $this->io->note("Updating $deviceDesc — data partition is preserved.");
+            }
             if (!$skipConfirm) {
                 $q = new ConfirmationQuestion('Proceed with update? [YES/no] ', true);
                 if (!$helper->ask($input, $output, $q)) {
@@ -394,16 +406,16 @@ class UsbSetupCommand extends BaseCommand
 
         $dataPartition = $device.'1';
 
-        // Step 1: Ventoy (-U to update in place, -I for full install)
+        // Step 1: Ventoy (-u to update in place, -I for full install)
         if ($installVentoy) {
             try {
-                $this->installVentoy($ventoyBin, $device, $skipConfirm, $output, $isUpdate);
+                $this->installVentoy($ventoyBin, $device, $output, $ventoyUpdate);
             } catch (Throwable $t) {
                 $this->io->error($t->getMessage());
 
                 return Command::FAILURE;
             }
-            $this->io->text($isUpdate ? 'Ventoy updated.' : 'Ventoy installed (MBR).');
+            $this->io->text($ventoyUpdate ? 'Ventoy updated.' : 'Ventoy installed (MBR).');
 
             // Step 2: FAT32 (skip in update mode if already correct)
             if ($isUpdate && $this->isFat32Ventoy($dataPartition)) {
@@ -679,6 +691,46 @@ class UsbSetupCommand extends BaseCommand
         $json = json_decode($out, true);
 
         return is_array($json) ? ($json['blockdevices'][0] ?? []) : [];
+    }
+
+    /**
+     * Ventoy always leaves a second (VTOYEFI) partition behind. Detected via lsblk (sysfs-backed,
+     * reliable inside the container) with a /dev-node fallback when lsblk yields nothing.
+     */
+    private function hasVentoyPartition(string $device): bool
+    {
+        $info = $this->lsblkInfo($device);
+        if (!empty($info)) {
+            return count(self::partitionNames($info)) >= 2;
+        }
+
+        return file_exists($device.'2');
+    }
+
+    /**
+     * Ventoy2Disk.sh swallows the worker's exit code, so exit 0 is not proof of success —
+     * known failure messages in the output count as failure too. Pure — unit-testable.
+     */
+    private static function ventoyRunFailed(int $exit, string $out): bool
+    {
+        return $exit !== 0
+            || str_contains($out, 'Some tools can not run')
+            || str_contains($out, 'does not contain Ventoy');
+    }
+
+    /**
+     * Extracts partition names from a single lsblk -J blockdevice entry. Pure — unit-testable.
+     */
+    private static function partitionNames(array $lsblkInfo): array
+    {
+        $names = [];
+        foreach ($lsblkInfo['children'] ?? [] as $child) {
+            if (is_array($child) && ($child['type'] ?? null) === 'part' && isset($child['name'])) {
+                $names[] = (string)$child['name'];
+            }
+        }
+
+        return $names;
     }
 
     private function getMountedPartitions(string $device): array
@@ -1038,19 +1090,22 @@ class UsbSetupCommand extends BaseCommand
     private function installVentoy(
         string $ventoyBin,
         string $device,
-        bool $skipConfirm,
         OutputInterface $output,
         bool $update = false
     ): void {
         $flag = $update ? '-u' : '-I';
         $this->io->text($update ? "Updating Ventoy on $device..." : "Installing Ventoy onto $device (MBR mode)...");
-        $cmd = 'bash '.escapeshellarg($ventoyBin)." $flag ".escapeshellarg($device);
-        if ($skipConfirm) {
-            $cmd = 'yes | '.$cmd;
-        }
-        [$exit] = $this->runCmd($cmd, true, $output);
-        if ($exit !== 0) {
-            throw new RuntimeException("Ventoy installation failed (exit {$exit}).");
+        // Ventoy2Disk.sh builds its tool PATH from the caller's CWD, so it must run from its own
+        // directory. Its own y/n prompts always get "yes" — this command already double-confirmed,
+        // and runCmd closes stdin, which would otherwise EOF-abort the install.
+        $ventoyDir = dirname($ventoyBin);
+        $cmd = 'cd '.escapeshellarg($ventoyDir).' && yes 2>/dev/null | bash ./'.basename($ventoyBin)
+            ." $flag ".escapeshellarg($device);
+        [$exit, $out] = $this->runCmd($cmd, true, $output);
+        if (self::ventoyRunFailed($exit, $out)) {
+            throw new RuntimeException(
+                "Ventoy installation failed (exit {$exit}) — see {$ventoyDir}/log.txt for details."
+            );
         }
         $this->runCmd('udevadm settle 2>/dev/null');
         sleep(2);
@@ -1064,6 +1119,16 @@ class UsbSetupCommand extends BaseCommand
         }
         $this->runCmd('partprobe '.escapeshellarg($device).' 2>/dev/null');
         $this->runCmd('udevadm settle 2>/dev/null');
+
+        // A real Ventoy install always leaves the 32 MiB VTOYEFI partition 2 behind.
+        try {
+            $this->waitForPartition($device.'2');
+        } catch (RuntimeException) {
+            throw new RuntimeException(
+                "Ventoy reported success but {$device}2 (VTOYEFI) never appeared — ".
+                "installation did not happen. See {$ventoyDir}/log.txt for details."
+            );
+        }
     }
 
     private function isFat32Ventoy(string $partition): bool

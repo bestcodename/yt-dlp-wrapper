@@ -140,4 +140,83 @@ final class UsbSetupCommandTest extends TestCase
 
         self::assertSame($expected, $method->invoke(null, $contentType));
     }
+
+    /**
+     * @return array<string, array{array<string, mixed>, array<int, string>}>
+     */
+    public static function partitionNamesProvider(): array
+    {
+        return [
+            'ventoy layout (2 partitions)' => [
+                ['name' => 'sdb', 'type' => 'disk', 'children' => [
+                    ['name' => 'sdb1', 'type' => 'part'],
+                    ['name' => 'sdb2', 'type' => 'part'],
+                ]],
+                ['sdb1', 'sdb2'],
+            ],
+            'single partition' => [
+                ['name' => 'sdb', 'type' => 'disk', 'children' => [
+                    ['name' => 'sdb1', 'type' => 'part'],
+                ]],
+                ['sdb1'],
+            ],
+            'no children key' => [
+                ['name' => 'sdb', 'type' => 'disk'],
+                [],
+            ],
+            'empty children' => [
+                ['name' => 'sdb', 'type' => 'disk', 'children' => []],
+                [],
+            ],
+            'non-partition children ignored' => [
+                ['name' => 'sdb', 'type' => 'disk', 'children' => [
+                    ['name' => 'sdb1', 'type' => 'part'],
+                    ['name' => 'dm-0', 'type' => 'crypt'],
+                    ['type' => 'part'],
+                ]],
+                ['sdb1'],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $lsblkInfo
+     * @param array<int, string> $expected
+     */
+    #[DataProvider('partitionNamesProvider')]
+    public function testPartitionNames(array $lsblkInfo, array $expected): void
+    {
+        $method = new ReflectionMethod(UsbSetupCommand::class, 'partitionNames');
+
+        self::assertSame($expected, $method->invoke(null, $lsblkInfo));
+    }
+
+    /**
+     * @return array<string, array{int, string, bool}>
+     */
+    public static function ventoyRunFailedProvider(): array
+    {
+        return [
+            'nonzero exit' => [1, '', true],
+            'clean success' => [0, "Ventoy: 1.1.16  x86_64\nDisk successfully updated", false],
+            'tool check failure despite exit 0' => [
+                0,
+                'Some tools can not run on current system. Please check log.txt for details.',
+                true,
+            ],
+            'update refused despite exit 0' => [
+                0,
+                "/dev/sdb does not contain Ventoy or data corrupted\nPlease use -i option",
+                true,
+            ],
+        ];
+    }
+
+    #[DataProvider('ventoyRunFailedProvider')]
+    public function testVentoyRunFailed(int $exit, string $out, bool $expected): void
+    {
+        $method = new ReflectionMethod(UsbSetupCommand::class, 'ventoyRunFailed');
+
+        self::assertSame($expected, $method->invoke(null, $exit, $out));
+    }
 }
