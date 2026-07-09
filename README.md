@@ -1,13 +1,14 @@
 # yt-dlp Tools
 
-A set of CLI tools for SoundCloud playlist downloading and USB stick setup, built on Symfony Console and ddev.
+A set of CLI tools for playlist downloading (SoundCloud/Spotify/YouTube) and USB stick setup, built on Symfony
+Console and ddev.
 
 ## Tools
 
-| Command               | Description                                                                                            |
-|-----------------------|--------------------------------------------------------------------------------------------------------|
-| `soundcloud:download` | Download SoundCloud playlists via yt-dlp, convert to MP3/WAV/FLAC, generate M3U8s                      |
-| `usb:setup`           | Install Ventoy on a USB stick, copy a Debian live ISO with persistence, or duplicate an existing stick |
+| Command          | Description                                                                                              |
+|------------------|----------------------------------------------------------------------------------------------------------|
+| `playlists:sync` | Download SoundCloud/Spotify/YouTube playlists via yt-dlp/spotdl, convert to MP3/WAV/FLAC, generate M3U8s |
+| `usb:setup`      | Install Ventoy on a USB stick, copy a Debian live ISO with persistence, or duplicate an existing stick   |
 
 ## Requirements
 
@@ -15,7 +16,7 @@ All commands are run via the CLI (terminal / command prompt).
 
 - [Docker](https://docs.ddev.com/en/stable/users/install/docker-installation/) — required by ddev
 - [ddev](https://docs.ddev.com/en/stable/users/install/ddev-installation/) — all other dependencies (PHP, yt-dlp,
-  ffmpeg, Ventoy, disk tools) are installed automatically on `ddev start`
+  spotdl, ffmpeg, Ventoy, disk tools) are installed automatically on `ddev start`
 
 ## Setup
 
@@ -32,15 +33,15 @@ their real (gitignored) names and fill in machine-specific values before first u
 
 ```bash
 cp config/usb-setup.json.example config/usb-setup.json        # optional — usb:setup works without it
-cp config/playlists.txt.example config/playlists.txt          # required by soundcloud:download
+cp config/playlists.txt.example config/playlists.txt          # required by playlists:sync
 cp config/cookies.txt.example config/cookies.txt               # only needed for authenticated downloads
 ```
 
 ## Usage
 
 ```bash
-# SoundCloud downloader (interactive)
-ddev exec bin/console soundcloud:download
+# Playlist sync (interactive)
+ddev exec bin/console playlists:sync
 
 # USB setup (interactive, requires root)
 ddev exec sudo bin/console usb:setup
@@ -61,10 +62,11 @@ ddev exec vendor/bin/phpunit     # or: ddev exec composer test
 
 ---
 
-## soundcloud:download
+## playlists:sync
 
 Downloads playlists into a shared audio library, converts to MP3/WAV/FLAC with ffmpeg, and generates per-playlist M3U8
-files.
+files. SoundCloud/YouTube URLs are handled by yt-dlp; Spotify URLs (`open.spotify.com/playlist|album|track`,
+`spotify:` URIs) are handled by spotdl, which matches tracks on YouTube Music and downloads best-quality m4a originals.
 
 ### Design
 
@@ -76,12 +78,12 @@ files.
 - Conversions normalize the sample rate: rates outside 44.1/48/96 kHz are resampled to the nearest supported rate ≥
   the source (capped at 96 kHz), so odd-rate FLAC/ALAC/WAV/AIFF and streaming/video-container sources export cleanly.
 - Each playlist prints a `Download: N new, N already in archive, N failed` summary, with the archive count derived from
-  the dedup archive (see the [downloader docs](docs/soundcloud-downloader.md#download-summary)).
+  the dedup archive (see the [downloader docs](docs/playlists-sync.md#download-summary)).
 
 ### Quick start
 
 ```bash
-ddev exec bin/console soundcloud:download \
+ddev exec bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads
 ```
@@ -89,7 +91,7 @@ ddev exec bin/console soundcloud:download \
 Or configure via `.env` and just run:
 
 ```bash
-ddev exec bin/console soundcloud:download
+ddev exec bin/console playlists:sync
 ```
 
 ### Options
@@ -115,9 +117,12 @@ FFPROBE_BIN=ffprobe             # used to detect source sample rate for resampli
 FORMATS=original,mp3,wav,flac
 
 MP3_QUALITY=0                   # LAME VBR: 0 = highest (~245 kbps), 9 = lowest
-LIB_FILENAME_TEMPLATE=%(id)s - %(title)s
+LIB_FILENAME_TEMPLATE=%(id)s - %(title)s   # yt-dlp sources only; Spotify always uses "{track-id} - {title}"
 
 COOKIES_FILE=cookies.txt        # Netscape format — needed for private/liked content
+
+SPOTDL_BIN=spotdl
+SPOTDL_COOKIE_FILE=config/spotdl-cookies.txt   # optional YT Music cookies → 256k m4a with Premium
 
 # LIBRARY_DIR=./downloads/library
 # ARCHIVE_DIR=./downloads/.archive

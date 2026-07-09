@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Spotify support via [spotdl](https://github.com/spotDL/spotify-downloader): `open.spotify.com` playlist/album/track
+  URLs (and `spotify:` URIs) in the input file are routed to spotdl, which matches tracks on YouTube Music and
+  downloads best-quality m4a originals (`--bitrate disable`) named `{track-id} - {title}` into the shared library;
+  playlist identity/entries come from `spotdl save` metadata; deduplication via a separate `.archive/spotify.txt`
+  (progress counted by archive diff); the existing ffmpeg conversion + M3U8 pipeline applies unchanged to all
+  sources. New env vars `SPOTDL_BIN` and `SPOTDL_COOKIE_FILE` (optional YT Music Premium cookies → 256k m4a);
+  spotdl installed in the ddev web image
+
+- `App\Process\ProcessRunner` interface + `ProcOpenProcessRunner` implementation — injectable process-execution seam
+  (optional constructor argument on both commands, defaulting to the real runner) extracted from the two duplicated
+  `runCmd` `proc_open` loops; `UsbSetupCommand::deviceNameCheckOutcome` pure helper extracted from
+  `checkAndRecordDeviceName` (silent / warn-missing / warn-mismatch decision)
+- Tests for the process-dependent paths via `FakeProcessRunner`/`TestableUsbSetupCommand` test doubles:
+  `ProcOpenProcessRunner` (real subprocesses), `lsblkInfo`, `hasVentoyPartition`, `isFat32Ventoy`, `installVentoy`
+  outcome verification (`-I`/`-u` flag, tool-failure detection, missing VTOYEFI partition), `validateSourceDevice`,
+  `mirrorDataPartition` (dry-run preview/confirm/decline), `downloadDebianIso` (cache hit/corrupt/re-download),
+  `SoundCloudDownloadCommand::probeSampleRate` and its `runCmd` line splitting, and `deviceNameCheckOutcome`
+- GitHub Actions workflow (`.github/workflows/tests.yml`) running the PHPUnit suite on every push (PHP 8.3,
+  ubuntu-latest, plain `composer install` + `composer test` — no ddev needed, the suite is self-contained)
+- `usb:setup` — free-space preflight for the configuration path: after ISO/software sizes are known and before the
+  stick is touched, a warning (+ confirmation unless `--yes`) appears when ISO + persistence + software may not fit
+  the target data partition (duplicate mode already had a hard-fail preflight; both now share
+  `targetDataCapacityBytes`)
+- `soundcloud:download` flow tests through CommandTester (`tests/Command/SoundCloudDownloadCommandFlowTest.php`):
+  download/convert/M3U8 happy path, playlist-fetch failure, yt-dlp nonzero exit, missing-options failure — all in a
+  temp workspace with `DOTENV_PATH` pinned so no real environment leaks in; plus unit tests for `ensureConverted`
+  (existing target short-circuit, missing source, probe→ffmpeg pipeline, ffmpeg failure) and `requireBinary`
+- Interactive `usb:setup` flow regression tests through `CommandTester::setInputs()`
+  (`tests/Command/UsbSetupCommandFlowTest.php`): `device_name` survives the final batched config save (stale-merge
+  clobber), device-name mismatch warning + abort, mode default follows detected stick state, update mode falls back
+  to a full Ventoy install (`-I`) when Ventoy is missing
+
 - `usb:setup` — `--source-device` option (and interactive "Payload" prompt) to duplicate an already-set-up Ventoy
   stick onto the target: after the normal Ventoy install, the source's data partition (ISO, `ventoy/ventoy.json`,
   `persistence.dat` including its user data, `/software/`) is mirrored via rsync instead of downloaded/created from
@@ -47,11 +79,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `playlists:sync` — ffmpeg conversions now run with `-loglevel error` instead of `-loglevel warning`, silencing
+  harmless warning noise (e.g. "timescale not set", "encoding as 24 bits-per-sample") that garbled the progress bars
+- **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube
+  and now Spotify, so the old name was misleading. Class `SoundCloudDownloadCommand` → `PlaylistsSyncCommand`,
+  config `config/soundcloud-download.json` → `config/playlists-sync.json` (existing legacy config is read once as
+  a fallback and migrated on the next interactive save), docs `docs/soundcloud-downloader.md` →
+  `docs/playlists-sync.md`
+- PHP requirement corrected from `>=8.1` to `>=8.2` — symfony/console ^7.0 and phpunit ^11 already require 8.2,
+  so 8.1 could never install the project; composer.lock content-hash refreshed
+- `soundcloud:download` — `requireBinary` now runs through the `ProcessRunner` seam instead of raw `@exec`
+- `usb:setup` — the "Software downloads file" prompt is asked only on the first run: any saved `download_sources`
+  answer (including `-` for "none", which is now persisted) is reused silently with an informational note;
+  `--downloads-file` or a config edit changes it later. Duplicate mode no longer prompts — downloads apply there
+  only via an explicit `--downloads-file`
 - `.gitignore` no longer blanket-excludes `config/`; only personal/machine-specific files (`usb-setup.json`,
   `playlists.txt`, `cookies.txt`, and anything under `usb-manual-downloads/`) stay gitignored
 
 ### Fixed
 
+- `soundcloud:download` — no longer crashes with a ProgressBar `LogicException` when every playlist fetch fails or
+  all playlists are empty (overall progress bar with `%remaining%` and 0 max steps)
+- `usb:setup` — partition paths are now derived correctly for devices whose name ends in a digit
+  (`/dev/nvme0n1` → `nvme0n1p1`/`nvme0n1p2`, mmcblk/loop likewise) via a new `partitionPath` helper; previously naive
+  `…1`/`…2` concatenation produced wrong node names (`nvme0n11`) on NVMe targets and sources
 - `usb:setup` — Ventoy no longer fails with `mkexfatfs: command not found`; `.ddev/web-build/Dockerfile` symlinks the
   modern `exfatprogs` binaries (`mkfs.exfat` → `mkexfatfs`, `fsck.exfat` → `exfatfsck`) to the legacy names Ventoy
   probes for

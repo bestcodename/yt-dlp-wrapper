@@ -5,11 +5,11 @@ declare(strict_types=1);
 
 require dirname(__DIR__).'/vendor/autoload.php';
 
-use App\Command\SoundCloudDownloadCommand;
+use App\Command\PlaylistsSyncCommand;
 use App\Command\UsbSetupCommand;
 use Symfony\Component\Console\Application;
 
 $app = new Application('yt-dlp tools', '1.0.0');
 $app->add(new UsbSetupCommand());
-$app->add(new SoundCloudDownloadCommand());
+$app->add(new PlaylistsSyncCommand());
 $app->run();

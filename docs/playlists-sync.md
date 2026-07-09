@@ -1,16 +1,17 @@
-# SoundCloud Playlist Downloader
+# Playlist Sync
 
-Downloads playlists via yt-dlp into a shared audio library, converts to MP3/WAV/FLAC with ffmpeg, and generates
-per-playlist M3U8 files.
+Downloads SoundCloud/Spotify/YouTube playlists into a shared audio library, converts to MP3/WAV/FLAC with ffmpeg,
+and generates per-playlist M3U8 files. SoundCloud/YouTube URLs are handled by yt-dlp; Spotify URLs by spotdl.
 
 ## Requirements
 
-| Tool    | Min version | Install                        |
-|---------|-------------|--------------------------------|
-| PHP     | 8.1         | ddev (auto)                    |
-| yt-dlp  | latest      | `ddev exec pip install yt-dlp` |
-| ffmpeg  | any recent  | `ddev exec apt install ffmpeg` |
-| ffprobe | any recent  | ships with ffmpeg              |
+| Tool    | Min version | Install                                             |
+|---------|-------------|-----------------------------------------------------|
+| PHP     | 8.2         | ddev (auto)                                         |
+| yt-dlp  | latest      | `ddev exec pip install yt-dlp`                      |
+| spotdl  | latest      | ships in the ddev web image (`pip3 install spotdl`) |
+| ffmpeg  | any recent  | `ddev exec apt install ffmpeg`                      |
+| ffprobe | any recent  | ships with ffmpeg                                   |
 
 `ffprobe` (bundled with ffmpeg) is used to detect each source's sample rate so conversions can be resampled to a
 supported rate — see [Sample-rate normalization](#sample-rate-normalization).
@@ -41,13 +42,13 @@ ddev start
 Prompts for any missing values:
 
 ```bash
-ddev exec bin/console soundcloud:download
+ddev exec bin/console playlists:sync
 ```
 
 Pre-fill some or all values — skips prompts for provided args:
 
 ```bash
-ddev exec bin/console soundcloud:download \
+ddev exec bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads
 ```
@@ -57,7 +58,7 @@ ddev exec bin/console soundcloud:download \
 All required args must be provided via flags or `.env`; exits immediately if any are missing:
 
 ```bash
-ddev exec bin/console soundcloud:download \
+ddev exec bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads \
   -n
@@ -68,14 +69,14 @@ ddev exec bin/console soundcloud:download \
 Put a `.env` file in the project root — ddev mounts it into the container automatically:
 
 ```bash
-ddev exec bin/console soundcloud:download
+ddev exec bin/console playlists:sync
 ```
 
 ### Override formats
 
 ```bash
 ddev exec env FORMATS=mp3,flac \
-  bin/console soundcloud:download \
+  bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads
 ```
@@ -84,7 +85,7 @@ ddev exec env FORMATS=mp3,flac \
 
 ```bash
 ddev exec env COOKIES_FILE=cookies.txt \
-  bin/console soundcloud:download \
+  bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads
 ```
@@ -92,7 +93,7 @@ ddev exec env COOKIES_FILE=cookies.txt \
 ### Custom playlists output directory
 
 ```bash
-ddev exec bin/console soundcloud:download \
+ddev exec bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads \
   --playlists-dir downloads/playlists
@@ -101,14 +102,14 @@ ddev exec bin/console soundcloud:download \
 ### Show full help
 
 ```bash
-ddev exec bin/console soundcloud:download --help
+ddev exec bin/console playlists:sync --help
 ```
 
 ### SSH into the container (interactive)
 
 ```bash
 ddev ssh
-bin/console soundcloud:download
+bin/console playlists:sync
 ```
 
 ## Options
@@ -138,11 +139,18 @@ FORMATS=original,mp3,wav,flac
 # LAME VBR quality — 0 = highest (~245 kbps), 9 = lowest
 MP3_QUALITY=0
 
-# Base filename template for library files
+# Base filename template for library files — yt-dlp sources only;
+# Spotify tracks always use "{track-id} - {title}" so the conversion loop finds them
 LIB_FILENAME_TEMPLATE=%(id)s - %(title)s
 
 # Cookies for private / liked content (Netscape format)
 COOKIES_FILE=cookies.txt
+
+# Spotify via spotdl
+SPOTDL_BIN=spotdl
+# Optional YouTube Music cookies (Netscape format) — with YT Music Premium spotdl
+# downloads 256 kbps m4a originals instead of 128 kbps
+SPOTDL_COOKIE_FILE=config/spotdl-cookies.txt
 
 # Shared library and archive dirs (default under OUTPUT_DIR)
 # LIBRARY_DIR=./downloads/library
@@ -159,12 +167,31 @@ LIMIT_RATE=1M
 PAUSE_BETWEEN=2
 ```
 
+## Spotify support
+
+Input-file lines matching `open.spotify.com/playlist|album|track` (also `intl-xx/` locale URLs and
+`spotify:playlist:...` URIs) are routed to [spotdl](https://github.com/spotDL/spotify-downloader); everything else
+goes to yt-dlp. spotdl matches each Spotify track on YouTube Music and downloads it as a best-quality m4a original
+(`--bitrate disable`); the regular ffmpeg conversion and M3U8 pipeline then applies exactly as for yt-dlp sources.
+
+- Deduplication uses a separate archive (`.archive/spotify.txt` — spotdl stores song URLs, yt-dlp stores
+  `extractor id` pairs, so the files are never mixed).
+- Optional `config/spotdl-cookies.txt` (YouTube Music cookies, Netscape format): with YT Music Premium spotdl
+  downloads 256 kbps m4a instead of 128 kbps. This is a different site/account than `config/cookies.txt`
+  (SoundCloud cookies for yt-dlp).
+- spotdl embeds tags and cover art into the m4a originals itself. Converted mp3/wav/flac keep the tags (ffmpeg
+  copies container metadata), but cover art is only present in the originals — Spotify sources have no `.jpg`
+  sidecar to re-embed from.
+- Spotify's API may throttle large batches; `PAUSE_BETWEEN` already sleeps between playlists.
+
 ## Output layout
 
 ```
 downloads/
   .archive/
-    original.txt          ← single dedup archive across all playlists
+    original.txt          ← single dedup archive across all playlists (yt-dlp sources)
+    spotify.txt           ← spotdl dedup archive (song URLs)
+    spotify-save-<md5>.spotdl  ← per-URL playlist metadata from `spotdl save` (debug artifact)
   library/
     original/
       <id> - <title>.<ext>

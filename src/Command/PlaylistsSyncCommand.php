@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\Process\ProcessRunner;
+use App\Process\ProcOpenProcessRunner;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -14,8 +16,10 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
-class SoundCloudDownloadCommand extends BaseCommand
+class PlaylistsSyncCommand extends BaseCommand
 {
+    public const SOURCE_SPOTIFY = 'spotify';
+    public const SOURCE_YTDLP = 'ytdlp';
     private ?string $cookiesFile;
     private string $extractorRetries;
     private string $ffmpegBin;
@@ -25,14 +29,23 @@ class SoundCloudDownloadCommand extends BaseCommand
     private string $mp3Quality;
     private int $pauseBetween;
     private string $retrySleep;
+    private readonly ProcessRunner $runner;
     private string $sleepRequests;
+    private string $spotdlBin;
+    private ?string $spotdlCookieFile;
     private string $ytDlpBin;
+
+    public function __construct(?ProcessRunner $runner = null)
+    {
+        parent::__construct();
+        $this->runner = $runner ?? new ProcOpenProcessRunner();
+    }
 
     protected function configure(): void
     {
         $this
-            ->setName('soundcloud:download')
-            ->setDescription('Download SoundCloud playlists via yt-dlp and convert to MP3/WAV/FLAC.')
+            ->setName('playlists:sync')
+            ->setDescription('Download SoundCloud/Spotify/YouTube playlists and convert to MP3/WAV/FLAC.')
             ->addOption('input', 'i', InputOption::VALUE_REQUIRED, 'Path to file with playlist URLs')
             ->addOption('out', 'o', InputOption::VALUE_REQUIRED, 'Base output directory')
             ->addOption('playlists-dir', null, InputOption::VALUE_REQUIRED, 'Directory for M3U8 playlist files');
@@ -51,6 +64,7 @@ class SoundCloudDownloadCommand extends BaseCommand
 
         // E-category: env override or ddev-installed default
         $this->ytDlpBin = getenv('YTDLP_BIN') ?: 'yt-dlp';
+        $this->spotdlBin = getenv('SPOTDL_BIN') ?: 'spotdl';
         $this->ffmpegBin = getenv('FFMPEG_BIN') ?: 'ffmpeg';
         $this->ffprobeBin = getenv('FFPROBE_BIN') ?: 'ffprobe';
         $this->mp3Quality = getenv('MP3_QUALITY') !== false ? (string)getenv('MP3_QUALITY') : '0';
@@ -58,6 +72,11 @@ class SoundCloudDownloadCommand extends BaseCommand
 
         $cookiesPath = dirname(__DIR__, 2).'/config/cookies.txt';
         $this->cookiesFile = is_file($cookiesPath) ? $cookiesPath : null;
+
+        // spotdl matches Spotify tracks on YouTube Music — its (optional) cookies are YT Music
+        // cookies, a different account/site than the yt-dlp SoundCloud cookies above.
+        $spotdlCookiePath = getenv('SPOTDL_COOKIE_FILE') ?: dirname(__DIR__, 2).'/config/spotdl-cookies.txt';
+        $this->spotdlCookieFile = is_file($spotdlCookiePath) ? $spotdlCookiePath : null;
 
         // B-category: from CLI option, env, or config (prompt once if not set)
         $inputFile = $input->getOption('input') ?? (getenv('INPUT_FILE') ?: ($config['input_file'] ?? null));
@@ -127,15 +146,6 @@ class SoundCloudDownloadCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        try {
-            $this->requireBinary($this->ytDlpBin, '--version');
-            $this->requireBinary($this->ffmpegBin, '-version');
-        } catch (RuntimeException $e) {
-            $this->io->error($e->getMessage());
-
-            return Command::FAILURE;
-        }
-
         $urls = array_values(
             array_filter(
                 array_map('trim', file($inputFile)),
@@ -144,6 +154,22 @@ class SoundCloudDownloadCommand extends BaseCommand
         );
         if (!$urls) {
             $this->io->error("No URLs found in $inputFile");
+
+            return Command::FAILURE;
+        }
+
+        $sources = array_map([self::class, 'classifySourceUrl'], $urls);
+
+        try {
+            if (in_array(self::SOURCE_YTDLP, $sources, true)) {
+                $this->requireBinary($this->ytDlpBin, '--version');
+            }
+            if (in_array(self::SOURCE_SPOTIFY, $sources, true)) {
+                $this->requireBinary($this->spotdlBin, '--version');
+            }
+            $this->requireBinary($this->ffmpegBin, '-version');
+        } catch (RuntimeException $e) {
+            $this->io->error($e->getMessage());
 
             return Command::FAILURE;
         }
@@ -168,10 +194,14 @@ class SoundCloudDownloadCommand extends BaseCommand
         $playlists = [];
         foreach ($urls as $url) {
             $fetchBar->setMessage(parse_url($url, PHP_URL_PATH) ?? $url);
+            $source = self::classifySourceUrl($url);
             try {
-                [$plTitle, , $plUploader, $plEntries] = $this->getPlaylistIdentityAndEntries($url);
+                [$plTitle, , $plUploader, $plEntries] = $source === self::SOURCE_SPOTIFY
+                    ? $this->getSpotifyPlaylistIdentityAndEntries($url, $archiveDir)
+                    : $this->getPlaylistIdentityAndEntries($url);
                 $playlists[] = [
                     'url' => $url,
+                    'source' => $source,
                     'folder' => self::safeName(sprintf('%s - %s', $plUploader, $plTitle)),
                     'entries' => $plEntries,
                 ];
@@ -194,7 +224,9 @@ class SoundCloudDownloadCommand extends BaseCommand
             )
         );
 
-        $overallBar = new ProgressBar($output, $totalTracks * 2);
+        // max(1, ...): the %remaining% placeholder throws when max is 0, which happens when
+        // every playlist fetch failed or all playlists are empty
+        $overallBar = new ProgressBar($output, max(1, $totalTracks * 2));
         $overallBar->setFormat(' Overall: %percent:3s%% [%bar%] remaining: %remaining% %message%');
         $overallBar->setMessage('');
         $overallBar->start();
@@ -208,90 +240,35 @@ class SoundCloudDownloadCommand extends BaseCommand
             $this->io->section(sprintf('[%d/%d] %s', $playlistIdx + 1, count($playlists), $url));
             $this->io->text("Playlist: $plFolder");
 
-            $commonArgs = [
-                '--no-overwrites',
-                '--continue',
-                '--ignore-errors',
-                '--no-abort-on-error',
-                '--yes-playlist',
-                // NOTE: no --add-metadata here. It makes yt-dlp remux the original to
-                // write tags, which fails ("Conversion failed!") for WAV/AIFF sources
-                // that carry an embedded cover image (the WAV muxer rejects the video
-                // stream), leaving those tracks unarchived and unconverted. Metadata and
-                // cover art are re-embedded per format by ensureConverted() from the
-                // .info.json / .jpg sidecars, so this is redundant anyway.
-                '--extractor-retries',
-                $this->extractorRetries,
-                '--retry-sleep',
-                $this->retrySleep,
-                '--sleep-requests',
-                $this->sleepRequests,
-                '--write-info-json',
-                '--write-thumbnail',
-                '--convert-thumbnails',
-                'jpg',
-            ];
-            if ($this->limitRate) {
-                $commonArgs[] = '--limit-rate';
-                $commonArgs[] = $this->limitRate;
-            }
-
-            $archiveFile = $archiveDir.DIRECTORY_SEPARATOR.'original.txt';
-            $originalOutTpl = str_replace(
-                DIRECTORY_SEPARATOR,
-                '/',
-                $originalLibDir.DIRECTORY_SEPARATOR.$libFilenameTemplate.'.%(ext)s'
-            );
-
-            $dlArgs = ['-f', 'bestaudio/best'];
-            if ($this->cookiesFile) {
-                $dlArgs[] = '--cookies';
-                $dlArgs[] = $this->cookiesFile;
-            }
-
-            $ytCmd = [
-                escapeshellcmd($this->ytDlpBin),
-                ...array_map('escapeshellarg', $commonArgs),
-                ...array_map('escapeshellarg', ['--download-archive', $archiveFile]),
-                ...array_map('escapeshellarg', ['--output', $originalOutTpl]),
-                ...array_map('escapeshellarg', $dlArgs),
-                '--print',
-                escapeshellarg('SEEN:%(title)s'),
-                '--print',
-                escapeshellarg('after_move:DONE:%(id)s'),
-                escapeshellarg($url),
-            ];
-
-            // yt-dlp filters already-archived playlist entries during enumeration,
-            // before any --print stage fires, so they emit no output at all. Snapshot
-            // the archive before downloading and diff against it to count skips.
-            $preArchivedIds = self::loadArchiveIds($archiveFile);
-
+            $tool = $playlist['source'] === self::SOURCE_SPOTIFY ? 'spotdl' : 'yt-dlp';
             $this->io->text('Downloading originals...');
-            $newCount = 0;
             $overallBar->setMessage('downloading...');
-            [$exit] = $this->runCmd(
-                implode(' ', $ytCmd),
-                function (string $line) use ($overallBar, &$newCount): void {
-                    if (str_starts_with($line, 'SEEN:')) {
-                        $overallBar->setMessage(substr($line, 5));
-                        $overallBar->advance();
-                    } elseif (str_starts_with($line, 'DONE:')) {
-                        $newCount++;
-                    }
-                }
-            );
+            [$newCount, $archivedCount, $exit, $failedEntries] = $playlist['source'] === self::SOURCE_SPOTIFY
+                ? $this->downloadSpotifyOriginals($url, $originalLibDir, $archiveDir, $overallBar, $plEntries)
+                : $this->downloadYtDlpOriginals(
+                    $url,
+                    $originalLibDir,
+                    $libFilenameTemplate,
+                    $archiveDir,
+                    $overallBar,
+                    $plEntries
+                );
             $overallBar->setMessage('');
-            $archivedCount = self::countArchived($plEntries, $preArchivedIds);
             $failedCount = max(0, count($plEntries) - $newCount - $archivedCount);
             $summary = sprintf('Download: %d new, %d already in archive', $newCount, $archivedCount);
             if ($failedCount > 0) {
                 $summary .= sprintf(', %d failed', $failedCount);
             }
             $this->io->text($summary);
+            if ($failedEntries) {
+                $this->io->text('Failed tracks:');
+                foreach ($failedEntries as $entry) {
+                    $this->io->text(sprintf('  - %s (%s)', $entry['title'], $entry['id']));
+                }
+            }
             if ($exit !== 0) {
-                $this->io->warning("yt-dlp exited with code $exit for originals; continuing.");
-                $failed[] = "$plFolder — yt-dlp exit code $exit";
+                $this->io->warning("$tool exited with code $exit for originals; continuing.");
+                $failed[] = "$plFolder — $tool exit code $exit";
             }
 
             foreach ($formatDirs as $d) {
@@ -432,6 +409,29 @@ class SoundCloudDownloadCommand extends BaseCommand
         }
     }
 
+    protected function loadConfig(): array
+    {
+        if (!is_file($this->getConfigPath())) {
+            $legacy = $this->getLegacyConfigPath();
+            if ($legacy !== null && is_file($legacy)) {
+                return $this->loadConfigFrom($legacy);
+            }
+        }
+
+        return parent::loadConfig();
+    }
+
+    protected function getConfigPath(): string
+    {
+        return dirname(__DIR__, 2).'/config/playlists-sync.json';
+    }
+
+    /** Pre-rename config location (soundcloud:download) — read once as fallback, never written. */
+    protected function getLegacyConfigPath(): ?string
+    {
+        return dirname(__DIR__, 2).'/config/soundcloud-download.json';
+    }
+
     private function resolveSleepRequests(string $raw): string
     {
         $raw = trim($raw);
@@ -451,12 +451,132 @@ class SoundCloudDownloadCommand extends BaseCommand
     private function requireBinary(string $bin, ?string $versionArg = null): void
     {
         $cmd = escapeshellcmd($bin).($versionArg ? ' '.$versionArg : '');
-        $exit = 0;
-        $out = [];
-        @exec($cmd.' 2>&1', $out, $exit);
+        [$exit] = $this->runCmd($cmd.' 2>&1', static fn() => null);
         if ($exit !== 0) {
             throw new RuntimeException("Missing dependency: $bin. Please install it and ensure it's in PATH.");
         }
+    }
+
+    private function runCmd(string $cmd, ?callable $onLine = null): array
+    {
+        return $this->runner->run(
+            $cmd,
+            function (string $chunk) use ($onLine): void {
+                foreach (preg_split('/\R/u', $chunk) as $line) {
+                    if ($line !== '') {
+                        $onLine ? $onLine($line) : $this->io->text($line);
+                    }
+                }
+            },
+            function (string $chunk): void {
+                foreach (preg_split('/\R/u', $chunk) as $line) {
+                    if ($line !== '') {
+                        $this->io->getErrorStyle()->text($line);
+                    }
+                }
+            },
+            true,
+        );
+    }
+
+    /**
+     * Routes an input-file line to its downloader. Everything not recognizably Spotify goes to
+     * yt-dlp (SoundCloud, YouTube, ...). Pure — unit-testable.
+     */
+    public static function classifySourceUrl(string $url): string
+    {
+        $webPattern = '#^https?://open\.spotify\.com/(?:intl-[a-z]{2}(?:-[a-z]{2})?/)?'
+            .'(?:playlist|album|track)/[A-Za-z0-9]+#i';
+        if (
+            preg_match($webPattern, $url) === 1
+            || preg_match('#^spotify:(?:playlist|album|track):[A-Za-z0-9]+$#i', $url) === 1
+        ) {
+            return self::SOURCE_SPOTIFY;
+        }
+
+        return self::SOURCE_YTDLP;
+    }
+
+    /**
+     * Spotify pendant to getPlaylistIdentityAndEntries(): `spotdl save` writes the playlist
+     * metadata to a JSON file, which is then mapped onto the same identity tuple.
+     *
+     * @return array{string, string, string, list<array{id: string, title: string}>}
+     */
+    private function getSpotifyPlaylistIdentityAndEntries(string $url, string $archiveDir): array
+    {
+        $saveFile = self::spotdlSaveFilePath($archiveDir, $url);
+        $cmd = implode(' ', [
+            escapeshellcmd($this->spotdlBin),
+            escapeshellarg('save'),
+            escapeshellarg($url),
+            escapeshellarg('--save-file'),
+            escapeshellarg($saveFile),
+        ]);
+        [$exit] = $this->runCmd($cmd, fn() => null);
+        $songs = is_file($saveFile) ? json_decode((string)file_get_contents($saveFile), true) : null;
+        if ($exit !== 0 || !is_array($songs)) {
+            throw new RuntimeException("Failed to query Spotify playlist info for URL: $url");
+        }
+
+        return self::parseSpotdlSaveData($songs, $url);
+    }
+
+    /**
+     * Deterministic per-URL save-file location ('.spotdl' suffix is required by spotdl).
+     * Kept after parsing — overwritten on the next run, useful as a debug artifact.
+     */
+    private static function spotdlSaveFilePath(string $archiveDir, string $url): string
+    {
+        return $archiveDir.DIRECTORY_SEPARATOR.'spotify-save-'.md5($url).'.spotdl';
+    }
+
+    /**
+     * Maps decoded .spotdl save data (JSON array of Song dicts written by `spotdl save`) to the
+     * [title, id, uploader, entries] tuple getPlaylistIdentityAndEntries() yields for yt-dlp
+     * sources. The save file carries no playlist-owner field, so the uploader is always
+     * 'Spotify'. Pure — unit-testable.
+     *
+     * @param list<array<string, mixed>> $songs
+     * @return array{string, string, string, list<array{id: string, title: string}>}
+     */
+    private static function parseSpotdlSaveData(array $songs, string $url): array
+    {
+        if ($songs === []) {
+            throw new RuntimeException("Failed to query Spotify playlist info for URL: $url");
+        }
+
+        $first = $songs[0];
+        // single-track URLs have list_name: null — fall back to the track name
+        $title = (string)($first['list_name'] ?? '') ?: (string)($first['name'] ?? '') ?: 'Playlist';
+        $id = self::spotifyIdFromUrl($url) ?: md5($url);
+
+        $entries = [];
+        foreach ($songs as $song) {
+            $songId = (string)($song['song_id'] ?? '') ?: self::spotifyIdFromUrl((string)($song['url'] ?? ''));
+            if ($songId === '') {
+                continue;
+            }
+            $entries[] = ['id' => $songId, 'title' => (string)($song['name'] ?? '')];
+        }
+
+        return [$title, $id, 'Spotify', $entries];
+    }
+
+    /**
+     * Last path segment of a Spotify URL (query stripped) or the last colon part of a
+     * spotify:...:ID URI — the track/playlist ID. Pure — unit-testable.
+     */
+    private static function spotifyIdFromUrl(string $url): string
+    {
+        $path = parse_url($url, PHP_URL_PATH);
+        $tail = is_string($path) ? basename($path) : '';
+        if ($tail === '' || str_contains($tail, ':')) {
+            $parts = explode(':', rtrim($url, ':'));
+            $tail = (string)end($parts);
+        }
+
+        return $tail;
     }
 
     private function getPlaylistIdentityAndEntries(string $url): array
@@ -505,51 +625,247 @@ class SoundCloudDownloadCommand extends BaseCommand
         return [$title, $id, $uploader, $entries];
     }
 
-    private function runCmd(string $cmd, ?callable $onLine = null): array
-    {
-        $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
-        $proc = proc_open($cmd, $descriptors, $pipes);
-        if (!is_resource($proc)) {
-            throw new RuntimeException("Failed to start process: $cmd");
-        }
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-        $stdout = '';
-        while (true) {
-            $status = proc_get_status($proc);
-            $out = stream_get_contents($pipes[1]);
-            $err = stream_get_contents($pipes[2]);
-            if ($out !== false && $out !== '') {
-                $stdout .= $out;
-                foreach (preg_split('/\R/u', $out) as $line) {
-                    if ($line !== '') {
-                        $onLine ? $onLine($line) : $this->io->text($line);
-                    }
-                }
-            }
-            if ($err !== false && $err !== '') {
-                foreach (preg_split('/\R/u', $err) as $line) {
-                    if ($line !== '') {
-                        $this->io->getErrorStyle()->text($line);
-                    }
-                }
-            }
-            if (!$status['running']) {
-                break;
-            }
-            usleep(100000);
-        }
-        $exitCode = proc_close($proc);
-
-        return [$exitCode, $stdout];
-    }
-
     private static function safeName(string $name): string
     {
         $name = preg_replace('/[^\p{L}\p{N}\-_. ]/u', '_', $name);
         $name = preg_replace('/\s+/', ' ', $name);
 
         return trim((string)$name);
+    }
+
+    /**
+     * Runs spotdl for one playlist URL. Progress counts come from diffing the archive file
+     * before/after — spotdl's stdout is not machine-readable, and it archives each song's URL
+     * on success (spotdl exits 0 even when individual songs fail to match, so failed entries
+     * are those still missing from the archive after the run).
+     *
+     * @param list<array{id: string, title: string}> $plEntries
+     * @return array{int, int, int, list<array{id: string, title: string}>}
+     *         [newCount, archivedCount, exitCode, failedEntries]
+     */
+    private function downloadSpotifyOriginals(
+        string $url,
+        string $originalLibDir,
+        string $archiveDir,
+        ProgressBar $overallBar,
+        array $plEntries
+    ): array {
+        $archiveFile = $archiveDir.DIRECTORY_SEPARATOR.'spotify.txt';
+        $pre = self::loadSpotdlArchiveIds($archiveFile);
+        $cmd = self::buildSpotdlDownloadCmd(
+            $this->spotdlBin,
+            $url,
+            $originalLibDir,
+            $archiveFile,
+            $this->spotdlCookieFile
+        );
+        [$exit] = $this->runCmd(implode(' ', $cmd), fn() => null);
+        $post = self::loadSpotdlArchiveIds($archiveFile);
+        $overallBar->advance(count($plEntries));
+
+        return [
+            max(0, count($post) - count($pre)),
+            self::countArchived($plEntries, $pre),
+            $exit,
+            self::missingEntries($plEntries, $post),
+        ];
+    }
+
+    /**
+     * Parse a spotdl --archive file (one song URL per line) into a set of Spotify track IDs.
+     *
+     * @return array<string, true>
+     */
+    private static function loadSpotdlArchiveIds(string $archiveFile): array
+    {
+        if (!is_file($archiveFile)) {
+            return [];
+        }
+        $ids = [];
+        foreach (preg_split('/\R/', (string)file_get_contents($archiveFile)) ?: [] as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+            $id = self::spotifyIdFromUrl($line);
+            if ($id !== '') {
+                $ids[$id] = true;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Builds the spotdl download command. The output template is fixed to '{track-id} - {title}'
+     * so the conversion loop's `{id} - *.*` glob finds the files (LIB_FILENAME_TEMPLATE applies
+     * to yt-dlp sources only); m4a + '--bitrate disable' yields the best quality spotdl offers
+     * (256k with YT Music Premium cookies). Pure — unit-testable.
+     *
+     * @return list<string> fully escaped command parts
+     */
+    private static function buildSpotdlDownloadCmd(
+        string $spotdlBin,
+        string $url,
+        string $originalLibDir,
+        string $archiveFile,
+        ?string $cookieFile
+    ): array {
+        $cmd = [
+            escapeshellcmd($spotdlBin),
+            escapeshellarg('download'),
+            escapeshellarg($url),
+            escapeshellarg('--output'),
+            escapeshellarg($originalLibDir.'/{track-id} - {title}.{output-ext}'),
+            escapeshellarg('--format'),
+            escapeshellarg('m4a'),
+            escapeshellarg('--bitrate'),
+            escapeshellarg('disable'),
+            escapeshellarg('--archive'),
+            escapeshellarg($archiveFile),
+        ];
+        if ($cookieFile !== null) {
+            $cmd[] = escapeshellarg('--cookie-file');
+            $cmd[] = escapeshellarg($cookieFile);
+        }
+
+        return $cmd;
+    }
+
+    /**
+     * Count how many playlist entries are already present in the archive id set.
+     *
+     * @param list<array{id: string, title: string}> $entries
+     * @param array<string, true> $archivedIds
+     */
+    private static function countArchived(array $entries, array $archivedIds): int
+    {
+        $count = 0;
+        foreach ($entries as $entry) {
+            if (isset($archivedIds[$entry['id']])) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Playlist entries whose id is not in the given id set — i.e. tracks that were neither
+     * archived before the run nor downloaded during it, which means they failed.
+     *
+     * @param list<array{id: string, title: string}> $entries
+     * @param array<string, true> $okIds
+     * @return list<array{id: string, title: string}>
+     */
+    private static function missingEntries(array $entries, array $okIds): array
+    {
+        return array_values(
+            array_filter(
+                $entries,
+                static fn(array $entry): bool => !isset($okIds[$entry['id']])
+            )
+        );
+    }
+
+    /**
+     * Runs yt-dlp for one playlist URL (SoundCloud/YouTube/...). New downloads are counted via
+     * the DONE: --print hook; already-archived entries emit no output at all, so they are
+     * counted by snapshotting the archive before the run. Failed entries are those neither
+     * present in the pre-run archive nor confirmed via a DONE: line.
+     *
+     * @param list<array{id: string, title: string}> $plEntries
+     * @return array{int, int, int, list<array{id: string, title: string}>}
+     *         [newCount, archivedCount, exitCode, failedEntries]
+     */
+    private function downloadYtDlpOriginals(
+        string $url,
+        string $originalLibDir,
+        string $libFilenameTemplate,
+        string $archiveDir,
+        ProgressBar $overallBar,
+        array $plEntries
+    ): array {
+        $commonArgs = [
+            '--no-overwrites',
+            '--continue',
+            '--ignore-errors',
+            '--no-abort-on-error',
+            '--yes-playlist',
+            // NOTE: no --add-metadata here. It makes yt-dlp remux the original to
+            // write tags, which fails ("Conversion failed!") for WAV/AIFF sources
+            // that carry an embedded cover image (the WAV muxer rejects the video
+            // stream), leaving those tracks unarchived and unconverted. Metadata and
+            // cover art are re-embedded per format by ensureConverted() from the
+            // .info.json / .jpg sidecars, so this is redundant anyway.
+            '--extractor-retries',
+            $this->extractorRetries,
+            '--retry-sleep',
+            $this->retrySleep,
+            '--sleep-requests',
+            $this->sleepRequests,
+            '--write-info-json',
+            '--write-thumbnail',
+            '--convert-thumbnails',
+            'jpg',
+        ];
+        if ($this->limitRate) {
+            $commonArgs[] = '--limit-rate';
+            $commonArgs[] = $this->limitRate;
+        }
+
+        $archiveFile = $archiveDir.DIRECTORY_SEPARATOR.'original.txt';
+        $originalOutTpl = str_replace(
+            DIRECTORY_SEPARATOR,
+            '/',
+            $originalLibDir.DIRECTORY_SEPARATOR.$libFilenameTemplate.'.%(ext)s'
+        );
+
+        $dlArgs = ['-f', 'bestaudio/best'];
+        if ($this->cookiesFile) {
+            $dlArgs[] = '--cookies';
+            $dlArgs[] = $this->cookiesFile;
+        }
+
+        $ytCmd = [
+            escapeshellcmd($this->ytDlpBin),
+            ...array_map('escapeshellarg', $commonArgs),
+            ...array_map('escapeshellarg', ['--download-archive', $archiveFile]),
+            ...array_map('escapeshellarg', ['--output', $originalOutTpl]),
+            ...array_map('escapeshellarg', $dlArgs),
+            '--print',
+            escapeshellarg('SEEN:%(title)s'),
+            '--print',
+            escapeshellarg('after_move:DONE:%(id)s'),
+            escapeshellarg($url),
+        ];
+
+        // yt-dlp filters already-archived playlist entries during enumeration,
+        // before any --print stage fires, so they emit no output at all. Snapshot
+        // the archive before downloading and diff against it to count skips.
+        $preArchivedIds = self::loadArchiveIds($archiveFile);
+
+        $newCount = 0;
+        $doneIds = [];
+        [$exit] = $this->runCmd(
+            implode(' ', $ytCmd),
+            function (string $line) use ($overallBar, &$newCount, &$doneIds): void {
+                if (str_starts_with($line, 'SEEN:')) {
+                    $overallBar->setMessage(substr($line, 5));
+                    $overallBar->advance();
+                } elseif (str_starts_with($line, 'DONE:')) {
+                    $newCount++;
+                    $doneIds[substr($line, 5)] = true;
+                }
+            }
+        );
+
+        return [
+            $newCount,
+            self::countArchived($plEntries, $preArchivedIds),
+            $exit,
+            self::missingEntries($plEntries, $preArchivedIds + $doneIds),
+        ];
     }
 
     /**
@@ -577,24 +893,6 @@ class SoundCloudDownloadCommand extends BaseCommand
         }
 
         return $ids;
-    }
-
-    /**
-     * Count how many playlist entries are already present in the archive id set.
-     *
-     * @param list<array{id: string, title: string}> $entries
-     * @param array<string, true> $archivedIds
-     */
-    private static function countArchived(array $entries, array $archivedIds): int
-    {
-        $count = 0;
-        foreach ($entries as $entry) {
-            if (isset($archivedIds[$entry['id']])) {
-                $count++;
-            }
-        }
-
-        return $count;
     }
 
     private static function readTagsFromInfoJson(string $path): array
@@ -726,7 +1024,7 @@ class SoundCloudDownloadCommand extends BaseCommand
     ): array {
         $hasCover = $coverPath !== null && in_array($format, ['mp3', 'flac'], true);
 
-        $cmd = [$ffmpegBin, '-y', '-nostdin', '-hide_banner', '-loglevel', 'warning', '-i', $sourcePath];
+        $cmd = [$ffmpegBin, '-y', '-nostdin', '-hide_banner', '-loglevel', 'error', '-i', $sourcePath];
         if ($hasCover) {
             $cmd[] = '-i';
             $cmd[] = $coverPath;
@@ -796,10 +1094,5 @@ class SoundCloudDownloadCommand extends BaseCommand
         }
 
         return str_repeat('../', count($fromParts)).implode('/', $toParts);
-    }
-
-    protected function getConfigPath(): string
-    {
-        return dirname(__DIR__, 2).'/config/soundcloud-download.json';
     }
 }

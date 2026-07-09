@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     parted \
     psmisc \
     python3-pip \
+    python3-venv \
     rsync \
     util-linux \
     && rm -rf /var/lib/apt/lists/*
@@ -25,3 +26,7 @@ RUN curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp 
     && chmod a+rx /usr/local/bin/yt-dlp
 
 RUN pip3 install --break-system-packages curl-cffi
+
+RUN python3 -m venv /opt/spotdl \
+    && /opt/spotdl/bin/pip install --no-cache-dir spotdl \
+    && ln -sf /opt/spotdl/bin/spotdl /usr/local/bin/spotdl
