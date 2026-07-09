@@ -11,8 +11,12 @@ abstract class BaseCommand extends Command
 {
     protected function loadConfig(): array
     {
+        return $this->loadConfigFrom($this->getConfigPath());
+    }
+
+    protected function loadConfigFrom(string $path): array
+    {
         $result = [];
-        $path = $this->getConfigPath();
         if (is_file($path)) {
             try {
                 $data = json_decode((string)file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);

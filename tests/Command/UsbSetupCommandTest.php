@@ -86,6 +86,123 @@ final class UsbSetupCommandTest extends TestCase
     }
 
     /**
+     * @return array<string, array{array, string, string, string, string}>
+     */
+    public static function deviceNameCheckOutcomeProvider(): array
+    {
+        return [
+            'empty config is silent' => [
+                [],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'different saved device is silent' => [
+                ['device' => '/dev/sdc', 'device_name' => 'usb Other Stick'],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'matching name is silent' => [
+                ['device' => '/dev/sdb', 'device_name' => 'usb Vendor Model'],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'saved name null is silent' => [
+                ['device' => '/dev/sdb', 'device_name' => null],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'saved name empty string is silent' => [
+                ['device' => '/dev/sdb', 'device_name' => ''],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'same device without recorded name warns missing' => [
+                ['device' => '/dev/sdb'],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'warn_missing',
+            ],
+            'changed name warns mismatch' => [
+                ['device' => '/dev/sdb', 'device_name' => 'usb Old Stick'],
+                '',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'warn_mismatch',
+            ],
+            'source prefix ignores unprefixed keys' => [
+                ['device' => '/dev/sdb', 'device_name' => 'usb Old Stick'],
+                'source_',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'silent',
+            ],
+            'source prefix without recorded name warns missing' => [
+                ['source_device' => '/dev/sdb'],
+                'source_',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'warn_missing',
+            ],
+            'source prefix changed name warns mismatch' => [
+                ['source_device' => '/dev/sdb', 'source_device_name' => 'usb Old Stick'],
+                'source_',
+                '/dev/sdb',
+                'usb Vendor Model',
+                'warn_mismatch',
+            ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string, int, array<array{source: string, relative: string}>,
+     *     array<string, int>, int}>
+     */
+    public static function estimateConfigurationPayloadBytesProvider(): array
+    {
+        $sizes = ['/iso/debian.iso' => 3000000000, '/cache/a.exe' => 500000000, '/local/b.zip' => 250000000];
+        $software = [
+            ['source' => '/cache/a.exe', 'relative' => 'a.exe'],
+            ['source' => '/local/b.zip', 'relative' => 'sub/b.zip'],
+        ];
+
+        return [
+            'iso + persistence + software' => [
+                '/iso/debian.iso',
+                2048,
+                $software,
+                $sizes,
+                3000000000 + 2048 * 1048576 + 750000000,
+            ],
+            'no iso: persistence not counted' => [
+                null,
+                2048,
+                $software,
+                $sizes,
+                750000000,
+            ],
+            'iso only' => [
+                '/iso/debian.iso',
+                4090,
+                [],
+                $sizes,
+                3000000000 + 4090 * 1048576,
+            ],
+            'nothing queued' => [null, 2048, [], $sizes, 0],
+        ];
+    }
+
+    /**
      * @return array<string, array{int, int}>
      */
     public static function estimateDataPartitionBytesProvider(): array
@@ -136,6 +253,7 @@ final class UsbSetupCommandTest extends TestCase
     /**
      * @return array<string, array{array<string, mixed>, array<int, string>}>
      */
+
     public static function partitionNamesProvider(): array
     {
         return [
@@ -180,6 +298,22 @@ final class UsbSetupCommandTest extends TestCase
                 ],
                 ['sdb1'],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{string, int, string}>
+     */
+    public static function partitionPathProvider(): array
+    {
+        return [
+            'sd-style partition 1' => ['/dev/sdb', 1, '/dev/sdb1'],
+            'sd-style partition 2' => ['/dev/sdb', 2, '/dev/sdb2'],
+            'nvme partition 1' => ['/dev/nvme0n1', 1, '/dev/nvme0n1p1'],
+            'nvme partition 2' => ['/dev/nvme0n1', 2, '/dev/nvme0n1p2'],
+            'mmcblk partition 1' => ['/dev/mmcblk0', 1, '/dev/mmcblk0p1'],
+            'loop partition 2' => ['/dev/loop0', 2, '/dev/loop0p2'],
+            'non-digit suffix stays plain' => ['/dev/null', 2, '/dev/null2'],
         ];
     }
 
@@ -289,6 +423,37 @@ final class UsbSetupCommandTest extends TestCase
         self::assertSame('invalid', $result['type']);
     }
 
+    #[DataProvider('deviceNameCheckOutcomeProvider')]
+    public function testDeviceNameCheckOutcome(
+        array $config,
+        string $configKeyPrefix,
+        string $device,
+        string $currentDeviceName,
+        string $expected
+    ): void {
+        $method = new ReflectionMethod(UsbSetupCommand::class, 'deviceNameCheckOutcome');
+
+        self::assertSame($expected, $method->invoke(null, $config, $configKeyPrefix, $device, $currentDeviceName));
+    }
+
+    /**
+     * @param array<array{source: string, relative: string}> $softwareFiles
+     * @param array<string, int> $sizes
+     */
+    #[DataProvider('estimateConfigurationPayloadBytesProvider')]
+    public function testEstimateConfigurationPayloadBytes(
+        ?string $debianIso,
+        int $persistenceMib,
+        array $softwareFiles,
+        array $sizes,
+        int $expected
+    ): void {
+        $method = new ReflectionMethod(UsbSetupCommand::class, 'estimateConfigurationPayloadBytes');
+        $fileSize = static fn(string $path): int => $sizes[$path];
+
+        self::assertSame($expected, $method->invoke(null, $debianIso, $persistenceMib, $softwareFiles, $fileSize));
+    }
+
     #[DataProvider('estimateDataPartitionBytesProvider')]
     public function testEstimateDataPartitionBytes(int $wholeDiskBytes, int $expected): void
     {
@@ -347,6 +512,14 @@ final class UsbSetupCommandTest extends TestCase
         $method = new ReflectionMethod(UsbSetupCommand::class, 'partitionNames');
 
         self::assertSame($expected, $method->invoke(null, $lsblkInfo));
+    }
+
+    #[DataProvider('partitionPathProvider')]
+    public function testPartitionPath(string $device, int $number, string $expected): void
+    {
+        $method = new ReflectionMethod(UsbSetupCommand::class, 'partitionPath');
+
+        self::assertSame($expected, $method->invoke(null, $device, $number));
     }
 
     #[DataProvider('shouldRejectAsHtmlProvider')]
