@@ -9,7 +9,9 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\StreamOutput;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 class PlaylistsSyncCommand extends BaseCommand
@@ -73,6 +75,7 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $mp3Mode;
     private string $mp3Quality;
     private int $pauseBetween;
+    private bool $reencodeStaleMp3;
     private string $retrySleep;
     private string $sleepRequests;
     private string $spotdlBin;
@@ -137,6 +140,14 @@ class PlaylistsSyncCommand extends BaseCommand
                 null,
                 InputOption::VALUE_REQUIRED,
                 'LAME VBR quality: 0 = highest, 9 = lowest (--mp3-mode=vbr only)'
+            )
+            ->addOption(
+                'reencode-stale-mp3',
+                null,
+                InputOption::VALUE_NEGATABLE,
+                'Re-encode existing mp3s whose average bitrate does not match --mp3-bitrate'
+                .' (fixes pre-CBR VBR files misreporting bitrate in Rekordbox; --mp3-mode=cbr only)',
+                true,
             )
             ->addOption('library-dir', null, InputOption::VALUE_REQUIRED, 'Shared audio library directory')
             ->addOption('archive-dir', null, InputOption::VALUE_REQUIRED, 'Download archive directory')
@@ -246,6 +257,7 @@ class PlaylistsSyncCommand extends BaseCommand
 
             return Command::FAILURE;
         }
+        $this->reencodeStaleMp3 = (bool)$input->getOption('reencode-stale-mp3');
 
         // Formats: CLI → env → config; prompted when configured nowhere, every interactive run
         // (like input/output — stops firing once an answer is persisted to the config file)
@@ -522,7 +534,7 @@ class PlaylistsSyncCommand extends BaseCommand
         $filteredTotal = 0;
         $spotifyFilterNoteShown = false;
 
-        $fetchBar = new ProgressBar($output, count($urls));
+        $fetchBar = new ProgressBar(self::barOutput($output), count($urls));
         $fetchBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% %message%');
         $fetchBar->setMessage('');
         $fetchBar->start();
@@ -563,7 +575,7 @@ class PlaylistsSyncCommand extends BaseCommand
 
         // max(1, ...): the %remaining% placeholder throws when max is 0, which happens when
         // every playlist fetch failed or all playlists are empty
-        $overallBar = new ProgressBar($output, max(1, $totalTracks * 2));
+        $overallBar = new ProgressBar(self::barOutput($output), max(1, $totalTracks * 2));
         $overallBar->setFormat(' Overall: %percent:3s%% [%bar%] remaining: %remaining% %message%');
         $overallBar->setMessage('');
         $overallBar->start();
@@ -657,7 +669,7 @@ class PlaylistsSyncCommand extends BaseCommand
 
             $convBar = null;
             if ($plEntries !== []) {
-                $convBar = new ProgressBar($output, count($plEntries));
+                $convBar = new ProgressBar(self::barOutput($output), count($plEntries));
                 $convBar->setFormat(
                     ' Tracks:    %current%/%max% [%bar%] %percent:3s%% remaining: %remaining% %message%'
                 );
@@ -929,6 +941,30 @@ class PlaylistsSyncCommand extends BaseCommand
                 }
             },
             true,
+        );
+    }
+
+    /**
+     * ProgressBar silently redirects to $output->getErrorOutput() for any ConsoleOutputInterface
+     * (Symfony's built-in behaviour, so piping a command's real stdout output stays clean of
+     * progress noise). On a real terminal stdout/stderr share one tty so this is invisible, but
+     * under `docker exec`/`ddev exec` (no pty allocated) they're two independently-buffered
+     * pipes — merging them for display desyncs the visual order. Forcing the bar onto the same
+     * stream as the rest of this command's output avoids that split entirely. Only applies to a
+     * real ConsoleOutputInterface: CommandTester/BufferedOutput (used in tests) aren't one, so
+     * ProgressBar already writes straight to them with no redirect — left untouched.
+     */
+    private static function barOutput(OutputInterface $output): OutputInterface
+    {
+        if (!$output instanceof ConsoleOutputInterface) {
+            return $output;
+        }
+
+        return new StreamOutput(
+            fopen('php://stdout', 'wb'),
+            $output->getVerbosity(),
+            $output->isDecorated(),
+            $output->getFormatter(),
         );
     }
 
@@ -1641,7 +1677,11 @@ class PlaylistsSyncCommand extends BaseCommand
         ?string $coverPath = null,
     ): ?string {
         if (is_file($targetPath)) {
-            return $targetPath;
+            if (!$this->shouldReencode($format, $targetPath)) {
+                return $targetPath;
+            }
+            $this->io->text("Re-encoding stale mp3 (bitrate mismatch, likely pre-CBR VBR): $targetPath");
+            unlink($targetPath);
         }
         if (!is_file($sourcePath)) {
             return null;
@@ -1672,6 +1712,33 @@ class PlaylistsSyncCommand extends BaseCommand
         [$exit] = $this->runCmd($cmdStr, fn() => null);
 
         return $exit === 0 ? $targetPath : null;
+    }
+
+    /**
+     * Whether an existing mp3 target should be deleted and reconverted. Only applies to mp3
+     * under CBR (VBR has no fixed bitrate target to compare against) and only when the
+     * feature is enabled (--reencode-stale-mp3, on by default).
+     */
+    private function shouldReencode(string $format, string $targetPath): bool
+    {
+        if (!$this->reencodeStaleMp3 || $format !== 'mp3' || $this->mp3Mode !== 'cbr') {
+            return false;
+        }
+        [$actualKbps] = $this->probeAudioProperties($targetPath);
+
+        return $actualKbps !== null && self::isBitrateMismatch($actualKbps, (float)$this->mp3Bitrate);
+    }
+
+    /**
+     * Whether an already-probed existing mp3's average bitrate is far enough from the
+     * configured target to be considered stale (e.g. a pre-CBR-default VBR encode). A real
+     * CBR encode's average sits within a couple percent of the target; a 10%-or-8kbps
+     * tolerance comfortably separates that from a genuinely mismatched encode. Pure —
+     * unit-testable.
+     */
+    public static function isBitrateMismatch(float $actualKbps, float $configuredKbps): bool
+    {
+        return abs($actualKbps - $configuredKbps) > max(8.0, $configuredKbps * 0.1);
     }
 
     private function probeSampleRate(string $path): ?int

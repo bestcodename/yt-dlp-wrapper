@@ -12,6 +12,11 @@ use ReflectionClassConstant;
 use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\ConsoleOutput;
+use Symfony\Component\Console\Output\StreamOutput;
+use Symfony\Component\Console\Style\SymfonyStyle;
 
 final class PlaylistsSyncCommandTest extends TestCase
 {
@@ -153,6 +158,22 @@ final class PlaylistsSyncCommandTest extends TestCase
                 [],
                 ['title' => '', 'artist' => '', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
             ],
+        ];
+    }
+
+    /**
+     * @return array<string, array{float, float, bool}>
+     */
+    public static function isBitrateMismatchProvider(): array
+    {
+        return [
+            'exact match' => [320.0, 320.0, false],
+            'stale VBR case (168 vs 320)' => [168.0, 320.0, true],
+            'small rounding difference' => [319.6, 320.0, false],
+            'just under 10% threshold at a 320 target' => [288.1, 320.0, false],
+            'just over 10% threshold at a 320 target' => [287.9, 320.0, true],
+            'absolute 8kbps floor kicks in below a low target: just under' => [60.0, 64.0, false],
+            'absolute 8kbps floor kicks in below a low target: just over' => [55.0, 64.0, true],
         ];
     }
 
@@ -448,6 +469,34 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertSame($expected, $method->invoke(null, $info));
     }
 
+    public function testBarOutputForcesConsoleOutputOntoStdout(): void
+    {
+        $output = new ConsoleOutput();
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'barOutput');
+
+        $result = $method->invoke(null, $output);
+
+        self::assertNotSame($output, $result);
+        self::assertInstanceOf(StreamOutput::class, $result);
+        self::assertSame($output->getVerbosity(), $result->getVerbosity());
+        self::assertSame($output->isDecorated(), $result->isDecorated());
+    }
+
+    /**
+     * ProgressBar silently redirects to getErrorOutput() for any ConsoleOutputInterface (see
+     * barOutput() docblock) — that's the real console app path, where barOutput() must return a
+     * distinct stream forced onto stdout. Test doubles (BufferedOutput, StreamOutput as used by
+     * CommandTester) are not ConsoleOutputInterface, so ProgressBar never redirects for them —
+     * barOutput() must return the exact same instance there, unchanged.
+     */
+    public function testBarOutputPassesThroughNonConsoleOutput(): void
+    {
+        $output = new BufferedOutput();
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'barOutput');
+
+        self::assertSame($output, $method->invoke(null, $output));
+    }
+
     public function testBuildFfmpegArgsFlacWithCover(): void
     {
         $args = self::buildFfmpegArgs('flac', cover: '/cover.jpg');
@@ -692,9 +741,41 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertSame(0, $method->invoke(null, $entries, []));
     }
 
-    public function testEnsureConvertedExistingTargetSkipsWork(): void
+    public function testEnsureConvertedExistingTargetSkipsNonMp3Format(): void
     {
         [$command, $fake] = self::makeCommand();
+        $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'ensureConverted');
+
+        try {
+            self::assertSame($target, $method->invoke($command, '/nonexistent/src.wav', $target, 'wav'));
+            self::assertSame([], $fake->commands);
+        } finally {
+            @unlink($target);
+        }
+    }
+
+    public function testEnsureConvertedExistingTargetSkipsWorkWhenBitrateMatches(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('ffprobe', 0, "codec_name=mp3\nbit_rate=320000\n");
+        $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'ensureConverted');
+
+        try {
+            self::assertSame($target, $method->invoke($command, '/nonexistent/src.wav', $target, 'mp3'));
+            self::assertCount(1, $fake->commands);
+            self::assertStringContainsString('ffprobe', $fake->commands[0]);
+            self::assertFileExists($target);
+        } finally {
+            @unlink($target);
+        }
+    }
+
+    public function testEnsureConvertedExistingTargetSkipsWorkWhenReencodeDisabled(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'reencodeStaleMp3'))->setValue($command, false);
         $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
         $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'ensureConverted');
 
@@ -718,6 +799,9 @@ final class PlaylistsSyncCommandTest extends TestCase
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Quality'))->setValue($command, '0');
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Mode'))->setValue($command, 'cbr');
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Bitrate'))->setValue($command, '320');
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'reencodeStaleMp3'))->setValue($command, true);
+        $io = new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'io'))->setValue($command, $io);
 
         return [$command, $fake];
     }
@@ -744,6 +828,32 @@ final class PlaylistsSyncCommandTest extends TestCase
 
         self::assertNull($method->invoke($command, '/nonexistent/src.wav', '/nonexistent/out.mp3', 'mp3'));
         self::assertSame([], $fake->commands);
+    }
+
+    public function testEnsureConvertedReencodesStaleMp3OnBitrateMismatch(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        // first ffprobe call: shouldReencode()'s bitrate probe (stale VBR average, far off the 320 target)
+        $fake->on('ffprobe', 0, "codec_name=mp3\nbit_rate=168428\n");
+        // second ffprobe call: probeSampleRate() during the reconversion that follows
+        $fake->on('ffprobe', 0, "44100\n");
+        $source = tempnam(sys_get_temp_dir(), 'sc_test_src_');
+        $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'ensureConverted');
+
+        try {
+            self::assertSame($target, $method->invoke($command, $source, $target, 'mp3'));
+            self::assertCount(3, $fake->commands);
+            self::assertStringContainsString('ffprobe', $fake->commands[0]);
+            self::assertStringContainsString('ffprobe', $fake->commands[1]);
+            self::assertStringContainsString('ffmpeg', $fake->commands[2]);
+            // the stale target was deleted before reconversion (FakeProcessRunner never
+            // recreates it, so its absence proves unlink() ran)
+            self::assertFileDoesNotExist($target);
+        } finally {
+            @unlink($source);
+            @unlink($target);
+        }
     }
 
     public function testEnsureConvertedRunsProbeThenFfmpeg(): void
@@ -829,6 +939,12 @@ final class PlaylistsSyncCommandTest extends TestCase
             @unlink($saveFile);
             @rmdir($archiveDir);
         }
+    }
+
+    #[DataProvider('isBitrateMismatchProvider')]
+    public function testIsBitrateMismatch(float $actualKbps, float $configuredKbps, bool $expected): void
+    {
+        self::assertSame($expected, PlaylistsSyncCommand::isBitrateMismatch($actualKbps, $configuredKbps));
     }
 
     /**
@@ -1159,6 +1275,56 @@ final class PlaylistsSyncCommandTest extends TestCase
     {
         $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'safeName');
         self::assertSame($expected, $method->invoke(null, $input));
+    }
+
+    public function testShouldReencodeFalseUnderVbrMode(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Mode'))->setValue($command, 'vbr');
+        $fake->on('ffprobe', 0, "codec_name=mp3\nbit_rate=168428\n");
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'shouldReencode');
+
+        self::assertFalse($method->invoke($command, 'mp3', '/some/target.mp3'));
+        self::assertSame([], $fake->commands);
+    }
+
+    public function testShouldReencodeFalseWhenFlagDisabled(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'reencodeStaleMp3'))->setValue($command, false);
+        $fake->on('ffprobe', 0, "codec_name=mp3\nbit_rate=168428\n");
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'shouldReencode');
+
+        self::assertFalse($method->invoke($command, 'mp3', '/some/target.mp3'));
+        self::assertSame([], $fake->commands);
+    }
+
+    public function testShouldReencodeFalseWhenProbeFails(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('ffprobe', 1, '');
+        $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'shouldReencode');
+
+        try {
+            self::assertFalse($method->invoke($command, 'mp3', $target));
+        } finally {
+            @unlink($target);
+        }
+    }
+
+    public function testShouldReencodeTrueOnMismatchedBitrate(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('ffprobe', 0, "codec_name=mp3\nbit_rate=168428\n");
+        $target = tempnam(sys_get_temp_dir(), 'sc_test_target_');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'shouldReencode');
+
+        try {
+            self::assertTrue($method->invoke($command, 'mp3', $target));
+        } finally {
+            @unlink($target);
+        }
     }
 
     #[DataProvider('targetSampleRateProvider')]

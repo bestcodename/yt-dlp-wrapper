@@ -151,32 +151,33 @@ bin/console playlists:sync
 Resolution order for every row: CLI option → env var → `config/playlists-sync.json` key → prompt (where marked) →
 default (see [Parameter resolution](#parameter-resolution)).
 
-| Parameter            | CLI option                | Env var                 | Config key              | Prompted when                                                              | Default                                        |
-|----------------------|---------------------------|-------------------------|-------------------------|----------------------------------------------------------------------------|------------------------------------------------|
-| Input file           | `--input` / `-i`          | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
-| Output dir           | `--out` / `-o`            | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
-| M3U8 dir             | `--playlists-dir`         | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
-| Min est. ODG         | `--min-odg`               | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
-| Min ODG mode         | `--min-odg-mode`          | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
-| Formats              | `--formats`               | `FORMATS`               | `formats`               | when unresolved, every interactive run                                     | `original,mp3,wav,flac`                        |
-| MP3 mode             | `--mp3-mode`              | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
-| MP3 bitrate (CBR)    | `--mp3-bitrate`           | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
-| MP3 quality (VBR)    | `--mp3-quality`           | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
-| Library dir          | `--library-dir`           | `LIBRARY_DIR`           | `library_dir`           | never                                                                      | `OUT/library`                                  |
-| Archive dir          | `--archive-dir`           | `ARCHIVE_DIR`           | `archive_dir`           | never                                                                      | `OUT/.archive`                                 |
-| Filename template    | `--lib-filename-template` | `LIB_FILENAME_TEMPLATE` | `lib_filename_template` | never                                                                      | `%(id)s - %(title)s`                           |
-| yt-dlp binary        | `--ytdlp-bin`             | `YTDLP_BIN`             | `ytdlp_bin`             | never                                                                      | `yt-dlp`                                       |
-| spotdl binary        | `--spotdl-bin`            | `SPOTDL_BIN`            | `spotdl_bin`            | never                                                                      | `spotdl`                                       |
-| ffmpeg binary        | `--ffmpeg-bin`            | `FFMPEG_BIN`            | `ffmpeg_bin`            | never                                                                      | `ffmpeg`                                       |
-| ffprobe binary       | `--ffprobe-bin`           | `FFPROBE_BIN`           | `ffprobe_bin`           | never                                                                      | `ffprobe`                                      |
-| Cookies (both tools) | `--cookies`               | `COOKIES_FILE`          | `cookies_file`          | never                                                                      | `config/cookies.txt` (used if the file exists) |
-| yt-dlp cookies       | `--ytdlp-cookies`         | `YTDLP_COOKIE_FILE`     | `ytdlp_cookie_file`     | never                                                                      | falls back to Cookies                          |
-| spotdl cookies       | `--spotdl-cookies`        | `SPOTDL_COOKIE_FILE`    | `spotdl_cookie_file`    | never                                                                      | falls back to Cookies                          |
-| Extractor retries    | `--extractor-retries`     | `EXTRACTOR_RETRIES`     | `extractor_retries`     | never                                                                      | `10`                                           |
-| Retry sleep          | `--retry-sleep`           | `RETRY_SLEEP`           | `retry_sleep`           | never                                                                      | `exp=2:10:120`                                 |
-| Sleep requests       | `--sleep-requests`        | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                      | `2`                                            |
-| Rate limit           | `--limit-rate`            | `LIMIT_RATE`            | `limit_rate`            | never                                                                      | off                                            |
-| Pause between        | `--pause-between`         | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                      | `2`                                            |
+| Parameter            | CLI option                                         | Env var                 | Config key              | Prompted when                                                              | Default                                        |
+|----------------------|----------------------------------------------------|-------------------------|-------------------------|----------------------------------------------------------------------------|------------------------------------------------|
+| Input file           | `--input` / `-i`                                   | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
+| Output dir           | `--out` / `-o`                                     | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
+| M3U8 dir             | `--playlists-dir`                                  | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
+| Min est. ODG         | `--min-odg`                                        | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
+| Min ODG mode         | `--min-odg-mode`                                   | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
+| Formats              | `--formats`                                        | `FORMATS`               | `formats`               | when unresolved, every interactive run                                     | `original,mp3,wav,flac`                        |
+| MP3 mode             | `--mp3-mode`                                       | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
+| MP3 bitrate (CBR)    | `--mp3-bitrate`                                    | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
+| MP3 quality (VBR)    | `--mp3-quality`                                    | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
+| Reencode stale MP3   | `--reencode-stale-mp3` / `--no-reencode-stale-mp3` | —                       | —                       | never (CLI-only, not persisted)                                            | on                                             |
+| Library dir          | `--library-dir`                                    | `LIBRARY_DIR`           | `library_dir`           | never                                                                      | `OUT/library`                                  |
+| Archive dir          | `--archive-dir`                                    | `ARCHIVE_DIR`           | `archive_dir`           | never                                                                      | `OUT/.archive`                                 |
+| Filename template    | `--lib-filename-template`                          | `LIB_FILENAME_TEMPLATE` | `lib_filename_template` | never                                                                      | `%(id)s - %(title)s`                           |
+| yt-dlp binary        | `--ytdlp-bin`                                      | `YTDLP_BIN`             | `ytdlp_bin`             | never                                                                      | `yt-dlp`                                       |
+| spotdl binary        | `--spotdl-bin`                                     | `SPOTDL_BIN`            | `spotdl_bin`            | never                                                                      | `spotdl`                                       |
+| ffmpeg binary        | `--ffmpeg-bin`                                     | `FFMPEG_BIN`            | `ffmpeg_bin`            | never                                                                      | `ffmpeg`                                       |
+| ffprobe binary       | `--ffprobe-bin`                                    | `FFPROBE_BIN`           | `ffprobe_bin`           | never                                                                      | `ffprobe`                                      |
+| Cookies (both tools) | `--cookies`                                        | `COOKIES_FILE`          | `cookies_file`          | never                                                                      | `config/cookies.txt` (used if the file exists) |
+| yt-dlp cookies       | `--ytdlp-cookies`                                  | `YTDLP_COOKIE_FILE`     | `ytdlp_cookie_file`     | never                                                                      | falls back to Cookies                          |
+| spotdl cookies       | `--spotdl-cookies`                                 | `SPOTDL_COOKIE_FILE`    | `spotdl_cookie_file`    | never                                                                      | falls back to Cookies                          |
+| Extractor retries    | `--extractor-retries`                              | `EXTRACTOR_RETRIES`     | `extractor_retries`     | never                                                                      | `10`                                           |
+| Retry sleep          | `--retry-sleep`                                    | `RETRY_SLEEP`           | `retry_sleep`           | never                                                                      | `exp=2:10:120`                                 |
+| Sleep requests       | `--sleep-requests`                                 | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                      | `2`                                            |
+| Rate limit           | `--limit-rate`                                     | `LIMIT_RATE`            | `limit_rate`            | never                                                                      | off                                            |
+| Pause between        | `--pause-between`                                  | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                      | `2`                                            |
 
 One cookie file (Netscape format holds cookies for multiple domains — e.g. SoundCloud for yt-dlp plus YouTube Music
 for spotdl) serves both tools by default; the per-tool parameters override it individually. A cookie file is only
@@ -365,6 +366,15 @@ the same bitrate.
   ~245 kbps average; `9` = lowest). Smaller files than CBR at the same audible quality, at the cost of the
   bitrate-misreport risk above.
 
+Normally an already-converted target is left untouched (see below). As an exception, when `--mp3-mode=cbr`
+(the default), `--reencode-stale-mp3` (on by default; disable with `--no-reencode-stale-mp3`) probes each
+existing mp3 target's actual average bitrate and, if it's off from `--mp3-bitrate` by more than 10% (or 8 kbps,
+whichever is larger), deletes and reconverts it — no redownload, since the source stays archived. This fixes
+mp3s converted before switching to CBR (or before this flag existed) without hunting down files by hand. Trade-off:
+if you lower `--mp3-bitrate` later (e.g. to save space), the next sync will reencode the whole library against the
+new target, not just genuinely stale files — a one-time cost of that setting change; pass `--no-reencode-stale-mp3`
+to skip it.
+
 ## Sample-rate normalization
 
 Some export targets (and DJ software) reject audio whose sample rate is outside 44.1/48/96 kHz, which previously broke
@@ -380,7 +390,8 @@ rate ≥ the source** (capped at 96 kHz):
 | 176.4 / 192 kHz | 96 kHz       |
 
 If `ffprobe` can't read the source, the conversion falls back to 44.1 kHz so the track still exports. Existing
-converted files are left untouched — delete a bad target and re-run to force reconversion.
+converted files are left untouched — delete a bad target and re-run to force reconversion (mp3 has an automatic
+exception for stale bitrates, see [MP3 encoding](#mp3-encoding) above).
 
 ## Rekordbox import
 
