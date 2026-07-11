@@ -76,6 +76,8 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $mp3Quality;
     private int $pauseBetween;
     private bool $reencodeStaleMp3;
+    /** @var list<string> target paths reencoded this run; reported in a summary, never inline (see ensureConverted) */
+    private array $reencodedStaleMp3 = [];
     private string $retrySleep;
     private string $sleepRequests;
     private string $spotdlBin;
@@ -258,6 +260,7 @@ class PlaylistsSyncCommand extends BaseCommand
             return Command::FAILURE;
         }
         $this->reencodeStaleMp3 = (bool)$input->getOption('reencode-stale-mp3');
+        $this->reencodedStaleMp3 = [];
 
         // Formats: CLI → env → config; prompted when configured nowhere, every interactive run
         // (like input/output — stops firing once an answer is persisted to the config file)
@@ -792,6 +795,20 @@ class PlaylistsSyncCommand extends BaseCommand
 
         if ($failed !== []) {
             $this->io->warning(array_merge(['The following playlists had errors:'], $failed));
+        }
+
+        if ($this->reencodedStaleMp3 !== []) {
+            $this->io->warning(
+                array_merge(
+                    [
+                        sprintf(
+                            '%d stale mp3(s) re-encoded (bitrate mismatch, likely pre-CBR VBR):',
+                            count($this->reencodedStaleMp3)
+                        ),
+                    ],
+                    $this->reencodedStaleMp3
+                )
+            );
         }
 
         if ($lowQualityTracks !== []) {
@@ -1680,7 +1697,12 @@ class PlaylistsSyncCommand extends BaseCommand
             if (!$this->shouldReencode($format, $targetPath)) {
                 return $targetPath;
             }
-            $this->io->text("Re-encoding stale mp3 (bitrate mismatch, likely pre-CBR VBR): $targetPath");
+            // Never write via $this->io here: this runs mid-loop while overallBar/convBar are
+            // actively redrawing, and under a non-decorated output (e.g. `ddev exec`, no pty)
+            // ProgressBar's redraw doesn't end with a newline, so an inline message would land
+            // glued onto the bar's still-open line. Collected and reported in the end-of-run
+            // summary instead, same as $failed/$lowQualityTracks.
+            $this->reencodedStaleMp3[] = $targetPath;
             unlink($targetPath);
         }
         if (!is_file($sourcePath)) {
