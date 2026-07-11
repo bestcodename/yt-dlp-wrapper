@@ -1,4 +1,8 @@
 services:
   web:
     privileged: true
-    pid: "host"
+    volumes:
+      # Host devtmpfs: hot-plugged block devices (USB sticks) get their /dev nodes
+      # created by host udev; the container's own /dev is a static snapshot from
+      # container start and never sees them.
+      - /dev:/dev

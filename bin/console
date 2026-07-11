@@ -10,6 +10,8 @@ use App\Command\UsbSetupCommand;
 use Symfony\Component\Console\Application;
 
 $app = new Application('yt-dlp tools', '1.0.0');
-$app->add(new UsbSetupCommand());
-$app->add(new PlaylistsSyncCommand());
+$app->addCommands([
+        new UsbSetupCommand(),
+        new PlaylistsSyncCommand(),
+]);
 $app->run();

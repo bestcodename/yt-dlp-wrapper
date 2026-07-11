@@ -1,6 +1,6 @@
 {
     "persistence_mib": 4090,
-    "cache_dir": ".cache",
+    "cache_dir": "downloads/.cache",
     "iso_source": "download",
     "iso_variant": "kde",
     "install_ventoy": true,

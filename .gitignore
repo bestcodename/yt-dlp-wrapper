@@ -1,4 +1,3 @@
-/.cache/
 /.claude/
 /config/*
 !/config/usb-downloads.txt

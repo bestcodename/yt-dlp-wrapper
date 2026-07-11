@@ -19,7 +19,8 @@ use Symfony\Component\Console\Tester\CommandTester;
  * filesystem write is the temp config file.
  *
  * Prompt order: [name-mismatch confirm] → [mode, unless --update] → Ventoy → payload →
- * ISO → downloads file → [update confirm | 2× wipe confirm].
+ * ISO → downloads (ChoiceQuestion once download_sources is configured; free-text on first
+ * run) → [update confirm | 2× wipe confirm] → [update-mode reformat confirm if not FAT32].
  */
 final class UsbSetupCommandFlowTest extends TestCase
 {
@@ -99,12 +100,12 @@ final class UsbSetupCommandFlowTest extends TestCase
         }
     }
 
-    private function makeFake(string $lsblkJson): FakeProcessRunner
+    private function makeFake(string $lsblkJson, string $fstype = 'vfat'): FakeProcessRunner
     {
         return (new FakeProcessRunner())
             ->on('lsblk -J -o NAME,', 0, $lsblkJson)
             ->on('which ', 0, "/usr/bin/stub\n")
-            ->on('blkid -o value -s TYPE', 0, "vfat\n")
+            ->on('blkid -o value -s TYPE', 0, "$fstype\n")
             ->on('blkid -o value -s LABEL', 0, "VENTOY\n")
             ->on('bash ./', 0, "Ventoy install finished\n");
     }
@@ -183,17 +184,129 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertSame('-', $config['download_sources'] ?? null);
     }
 
-    public function testDownloadsPromptSkippedWhenConfigured(): void
+    public function testDownloadsChoiceDefaultsToCopyFromSavedPath(): void
+    {
+        $downloadsFile = tempnam(sys_get_temp_dir(), 'usb_setup_flow_downloads_');
+        file_put_contents($this->configPath, json_encode(['download_sources' => $downloadsFile])."\n");
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        try {
+            // empty answer accepts the 'copy software from <saved path>' default; the file is
+            // empty so nothing is queued and the mount block is never entered
+            $tester->setInputs(['', '1', '', '2', '', 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString("copy software from $downloadsFile", $display);
+            self::assertStringContainsString("queued from $downloadsFile", $display);
+            self::assertSame($downloadsFile, $this->savedConfig()['download_sources'] ?? null);
+        } finally {
+            @unlink($downloadsFile);
+        }
+    }
+
+    public function testDownloadsChoiceDefaultsToSkipWhenDisabledInConfig(): void
     {
         file_put_contents($this->configPath, json_encode(['download_sources' => '-'])."\n");
         $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
 
-        // same flow as the clobber test but WITHOUT a downloads-file answer — no prompt expected
-        $tester->setInputs(['', '1', '', '2', 'yes']);
+        // same flow as the clobber test; empty answer accepts the 'skip software downloads' default
+        $tester->setInputs(['', '1', '', '2', '', 'yes']);
         $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
 
         self::assertSame(Command::SUCCESS, $exit);
-        self::assertStringContainsString('Software downloads disabled in config', $this->display($tester));
+        $display = $this->display($tester);
+        self::assertStringContainsString('Software downloads:', $display);
+        self::assertStringContainsString('skip software downloads', $display);
+        self::assertStringNotContainsString('queued from', $display);
+        self::assertSame('-', $this->savedConfig()['download_sources'] ?? null);
+    }
+
+    public function testDownloadsChoiceDisabledConfigCanEnableViaFreeText(): void
+    {
+        $downloadsFile = tempnam(sys_get_temp_dir(), 'usb_setup_flow_downloads_');
+        file_put_contents($this->configPath, json_encode(['download_sources' => '-'])."\n");
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        try {
+            // '1' selects 'copy software from a downloads file', then the free-text question
+            $tester->setInputs(['', '1', '', '2', '1', $downloadsFile, 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString('Software downloads file', $display);
+            self::assertStringContainsString("queued from $downloadsFile", $display);
+            self::assertSame($downloadsFile, $this->savedConfig()['download_sources'] ?? null);
+        } finally {
+            @unlink($downloadsFile);
+        }
+    }
+
+    public function testDownloadsChoiceSkipReplacesSavedPathWithDash(): void
+    {
+        $downloadsFile = tempnam(sys_get_temp_dir(), 'usb_setup_flow_downloads_');
+        file_put_contents($this->configPath, json_encode(['download_sources' => $downloadsFile])."\n");
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        try {
+            // '2' selects 'skip software downloads' despite the saved path
+            $tester->setInputs(['', '1', '', '2', '2', 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+            self::assertSame(Command::SUCCESS, $exit);
+            self::assertStringNotContainsString('queued from', $this->display($tester));
+            self::assertSame('-', $this->savedConfig()['download_sources'] ?? null);
+        } finally {
+            @unlink($downloadsFile);
+        }
+    }
+
+    public function testEnvDeviceActsLikeCliOption(): void
+    {
+        putenv('USB_DEVICE=/dev/null');
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+        $this->command->existingPartitions = ['/dev/null1', '/dev/null2'];
+
+        $exit = $tester->execute([], ['interactive' => false]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertStringNotContainsString('--device is required', $this->display($tester));
+    }
+
+    public function testInstallVentoyParamSuppressesPrompt(): void
+    {
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        // mode default, [no Ventoy prompt], payload default, ISO skip, no downloads, proceed
+        $tester->setInputs(['', '', '2', '-', 'yes']);
+        $exit = $tester->execute(
+            ['--device' => '/dev/null', '--install-ventoy' => 'no'],
+            ['interactive' => true]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringNotContainsString('Ventoy:', $display);
+        self::assertStringContainsString('Ventoy install skipped.', $display);
+        self::assertFalse($this->savedConfig()['install_ventoy'] ?? null);
+    }
+
+    public function testInvalidIsoVariantFails(): void
+    {
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        $exit = $tester->execute(
+            ['--device' => '/dev/null', '--iso-variant' => 'bogus'],
+            ['interactive' => false]
+        );
+
+        self::assertSame(Command::FAILURE, $exit);
+        self::assertStringContainsString(
+            'Invalid --iso-variant / USB_ISO_VARIANT value: bogus',
+            $this->display($tester)
+        );
     }
 
     /**
@@ -207,6 +320,8 @@ final class UsbSetupCommandFlowTest extends TestCase
     ): void {
         file_put_contents($this->configPath, "{}\n");
         $tester = $this->makeTester($this->makeFake($lsblkJson));
+        // scratch mode reformats even with Ventoy skipped — partition 1 must "appear"
+        $this->command->existingPartitions = ['/dev/null1'];
 
         // empty first input accepts the ChoiceQuestion default derived from the detected state
         $tester->setInputs($inputs);
@@ -220,6 +335,38 @@ final class UsbSetupCommandFlowTest extends TestCase
         } else {
             self::assertStringContainsString('USB Setup — Update Summary', $display);
         }
+    }
+
+    public function testNonInteractiveWithoutDeviceFails(): void
+    {
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        $exit = $tester->execute([], ['interactive' => false]);
+
+        self::assertSame(Command::FAILURE, $exit);
+        self::assertStringContainsString('--device is required', $this->display($tester));
+    }
+
+    public function testScratchSkipVentoyReformatsFat32(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_NO_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1'];
+
+        // mode default (scratch), skip Ventoy, payload default, ISO skip, no downloads, 2× wipe confirm
+        $tester->setInputs(['', '1', '', '2', '-', 'yes', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringContainsString('Ventoy install skipped.', $display);
+        self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
+        // no Ventoy anywhere: neutral label, no Ventoy boot hint
+        self::assertTrue($fake->ran("mkfs.fat -F 32 -n 'USBDATA'"));
+        self::assertStringContainsString('no Ventoy on this stick', $display);
+        self::assertStringNotContainsString('boot them with Ventoy', $display);
+        self::assertFalse($fake->ran('bash ./'));
     }
 
     #[DataProvider('ventoyFlagProvider')]
@@ -256,13 +403,115 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertStringContainsString("'/dev/null'", $ventoyCmds[0]);
     }
 
+    public function testUpdateNonFat32ReformatAcceptedRuns(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY, 'exfat');
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1'];
+
+        // same flow but ACCEPT the reformat prompt
+        $tester->setInputs(['', '1', '', '2', '-', 'yes', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertStringContainsString('Partition 1 formatted as FAT32.', $this->display($tester));
+        // Ventoy still on the stick — the VENTOY label is kept
+        self::assertTrue($fake->ran("mkfs.fat -F 32 -n 'VENTOY'"));
+    }
+
+    public function testUpdateNonFat32ReformatDeclinedLeavesPartition(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY, 'exfat');
+        $tester = $this->makeTester($fake);
+
+        // mode default (update), skip Ventoy, payload default, ISO skip, no downloads,
+        // update confirm, then DECLINE the reformat prompt
+        $tester->setInputs(['', '1', '', '2', '-', 'yes', 'no']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringContainsString('Partition 1 is not FAT32', $display);
+        self::assertStringContainsString('left untouched (not FAT32)', $display);
+        self::assertFalse($fake->ran('mkfs.fat -F 32'));
+    }
+
+    public function testUpdateSkipVentoyFat32SkipsReformat(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+
+        // mode default (update), skip Ventoy, payload default, ISO skip, no downloads, update confirm
+        $tester->setInputs(['', '1', '', '2', '-', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringContainsString('already FAT32 (VENTOY) — skipping reformat.', $display);
+        self::assertStringNotContainsString('Partition 1 is not FAT32', $display);
+        self::assertFalse($fake->ran('mkfs.fat -F 32'));
+    }
+
+    public function testUsbUpdateEnvSkipsModePrompt(): void
+    {
+        putenv('USB_UPDATE=1');
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        // [no mode prompt], skip Ventoy, payload default, ISO skip, no downloads, proceed
+        $tester->setInputs(['1', '', '2', '-', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringNotContainsString('Mode:', $display);
+        self::assertStringContainsString('update (skip completed steps)', $display);
+    }
+
+    public function testUsbYesEnvSkipsConfirmations(): void
+    {
+        putenv('USB_YES=1');
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        // mode default, skip Ventoy, payload default, ISO skip, no downloads — no confirm inputs
+        $tester->setInputs(['', '1', '', '2', '-']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertStringNotContainsString('Proceed with update?', $this->display($tester));
+    }
+
     protected function setUp(): void
     {
         $this->configPath = tempnam(sys_get_temp_dir(), 'usb_setup_flow_test_').'.json';
+        // pin DOTENV_PATH to an empty file so a real repo/cwd .env never leaks into the tests
+        file_put_contents($this->configPath.'.env', '');
+        putenv('DOTENV_PATH='.$this->configPath.'.env');
     }
 
     protected function tearDown(): void
     {
+        foreach (
+            [
+                'DOTENV_PATH',
+                'USB_DEVICE',
+                'USB_SOURCE_DEVICE',
+                'USB_DEBIAN_ISO',
+                'USB_PERSISTENCE_SIZE',
+                'USB_DOWNLOADS_FILE',
+                'USB_CACHE_DIR',
+                'USB_UPDATE',
+                'USB_YES',
+                'USB_INSTALL_VENTOY',
+                'USB_ISO_VARIANT',
+            ] as $key
+        ) {
+            putenv($key);
+            unset($_ENV[$key], $_SERVER[$key]);
+        }
+        @unlink($this->configPath.'.env');
         @unlink($this->configPath);
         @unlink(substr($this->configPath, 0, -strlen('.json')));
     }

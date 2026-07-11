@@ -31,7 +31,7 @@
 config/usb-manual-downloads/
 
 # T-Racks 8x8 Matrix Digital Processor Editor
-https://fast-images.static-thomann.de/pics/atg/atgdata/file/misc/t_racks_8x8_matrix_digital_processor_editor_v1_0_setup.exe
+# https://fast-images.static-thomann.de/pics/atg/atgdata/file/misc/t_racks_8x8_matrix_digital_processor_editor_v1_0_setup.exe
 
 # Rekordbox — the download page itself is account-gated, but the CDN link below was found to
 # be a real, direct, unauthenticated download (verified: HTTP 200, application/zip, correct

@@ -8,6 +8,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `playlists:sync` — `original` is now a real output format: including it in `--formats` / `FORMATS` / `formats`
+  writes a `<Playlist> - original.m3u8` playlist referencing the untouched downloaded files, same as `mp3`/`wav`/
+  `flac` already did. Previously the entries were collected internally but the playlist was never written — the
+  data was there, the write loop just never included `original`
+- `playlists:sync` — MP3 encoding mode (`--mp3-mode` / `MP3_MODE` / `mp3_mode`): `cbr` (constant bitrate,
+  **new default**, bitrate via `--mp3-bitrate` / `MP3_BITRATE` / `mp3_bitrate`, default `320`) or `vbr` (the
+  previous behaviour, quality via the existing `--mp3-quality`). CBR is now the default because some DJ software
+  (Rekordbox) misreports VBR MP3 bitrate — it reads the first frame's bitrate instead of the true average, so a
+  track with a quiet intro can display a wildly low bitrate (e.g. "32 kbit/s") despite a much higher real average.
+  Never prompted (E-category parameter, like the other ffmpeg/binary options)
+- `playlists:sync` — CLI options for every parameter (`--formats`, `--mp3-quality`, `--library-dir`,
+  `--archive-dir`, `--lib-filename-template`, `--ytdlp-bin`, `--spotdl-bin`, `--ffmpeg-bin`, `--ffprobe-bin`,
+  `--extractor-retries`, `--retry-sleep`, `--sleep-requests`, `--limit-rate`, `--pause-between`); resolution stays
+  CLI → env → config file → default
+- `playlists:sync` — unified cookies: one shared Netscape cookie file for both yt-dlp and spotdl
+  (`--cookies` / `COOKIES_FILE` / `cookies_file`, default `config/cookies.txt`) with per-tool overrides
+  (`--ytdlp-cookies` / `YTDLP_COOKIE_FILE` / `ytdlp_cookie_file` and
+  `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file`)
+- `playlists:sync` — the output formats question (`--formats` / `FORMATS` / `formats`) is now prompted when
+  configured nowhere, same as input file/output directory: a comma-separated list of `original`, `mp3`, `wav`,
+  `flac`, validated (`PlaylistsSyncCommand::parseFormatsAnswer` is a pure, unit-tested parser rejecting empty or
+  unknown entries) and persisted so it is asked only once; fixed a latent stale-config-merge bug in the
+  input-file/output-dir prompt save that this exposed (it now reloads the config file fresh instead of reusing
+  the copy read at the start of the run, so an earlier prompt answer in the same run is no longer clobbered)
+- `playlists:sync` — codec-aware quality threshold on the PEAQ ODG scale (0 = transparent … -4 = very annoying):
+  each source's estimated ODG is interpolated from a per-codec calibration table (`mp3`/`aac`/`opus`/`vorbis`
+  anchor points; lossless = 0, unknown codecs use the conservative MP3 curve), so e.g. 128 kbps Opus passes a
+  threshold that 128 kbps MP3 fails; configured via `--min-odg` / `MIN_ODG` / `min_odg` with
+  `--min-odg-mode` / `MIN_ODG_MODE` / `min_odg_mode` (`warn`/`filter`); in filter mode the threshold is inverted
+  per codec into minimum bitrates and expressed as a fail-closed yt-dlp format selector with one branch per codec
+  prefix (lossless always passes); the post-download check reads `acodec` from the `.info.json` or probes
+  codec + bitrate with a single `ffprobe` call (spotdl tracks); warn/skip messages show raw kbps, codec, and
+  estimated ODG; a track appearing in several playlists is evaluated and warn-listed once (per-file cache,
+  deduped by track id); the warn line's title falls back to the `.info.json` title and then to the
+  `{id} - {title}` library filename when the playlist entry carries no title (SoundCloud set entries,
+  pre-sidecar downloads)
+- `playlists:sync` — the min-odg question is a guided prompt: quality tiers with decision help
+  ([1] Archive / Pro Club Standard ODG ≥ -0.2, [2] Semi-Pro Performance Minimum ODG ≥ -1.0, [3] Preview Only
+  ODG ≥ -2.0, [4] Off — hints show per-codec bitrate equivalents), accepting an option number, a custom
+  ODG value in [-4, 0], or empty for off (`PlaylistsSyncCommand::parseMinOdgAnswer` is a pure, unit-tested parser)
+- `usb:setup` — env vars for the existing options, acting like the CLI option (they suppress the prompt):
+  `USB_DEVICE`, `USB_SOURCE_DEVICE`, `USB_DEBIAN_ISO`, `USB_PERSISTENCE_SIZE`, `USB_DOWNLOADS_FILE`,
+  `USB_UPDATE` (for `--update`), `USB_YES` (for `--yes`); new parameters `--cache-dir` / `USB_CACHE_DIR`,
+  `--install-ventoy` / `USB_INSTALL_VENTOY` (yes/no, skips the Ventoy prompt) and `--iso-variant` /
+  `USB_ISO_VARIANT` (implies ISO source "download", skips the ISO prompts, works non-interactively too);
+  usb:setup now reads `.env` (loader moved to `BaseCommand`)
+
+- `playlists:sync` — config-file fallback layer for every parameter: all env vars now have a snake_case equivalent
+  in `config/playlists-sync.json` (resolution order: CLI option → env var → config file → prompt → default); new
+  `config/playlists-sync.json.example`
+- `playlists:sync` — interactive quality-threshold prompts: the minimum estimated ODG (`min_odg`) is asked **once**
+  when configured nowhere (empty answer persists `"min_odg": null` = off; delete the key to re-trigger), the
+  `warn`/`filter` mode (`min_odg_mode`) is asked **every interactive run while a minimum is active** with the
+  saved/env value as default (`--min-odg-mode` suppresses it); `-n` skips both, only prompt answers are persisted
+- `BaseCommand` prompt/resolution primitives shared by both commands: `askText` (free text with saved default +
+  validator), `askChoice` (choice with saved value/index default), `askConfirmation` (confirmation honouring a
+  skip-confirm flag), `resolveParam` (CLI → env → config → default)
+- README/docs — shared "Configuration & parameter resolution" overview (evaluation order, persistence rule) plus
+  unified per-command parameter tables (param, CLI option, env var, config key, prompted-when, default) for
+  `playlists:sync` and `usb:setup`
+
 - Spotify support via [spotdl](https://github.com/spotDL/spotify-downloader): `open.spotify.com` playlist/album/track
   URLs (and `spotify:` URIs) in the input file are routed to spotdl, which matches tracks on YouTube Music and
   downloads best-quality m4a originals (`--bitrate disable`) named `{track-id} - {title}` into the shared library;
@@ -79,6 +140,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `usb:setup` — the ISO/software download cache moved from top-level `.cache/` to `downloads/.cache/`, so all
+  generated/downloaded content lives under the one gitignored `downloads/` tree; default `--cache-dir` /
+  `USB_CACHE_DIR` / `cache_dir` updated accordingly (existing cached files should be moved manually, or just
+  re-downloaded — nothing migrates automatically)
+- **Breaking**: `config/spotdl-cookies.txt` is no longer a spotdl default — point
+  `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file` at it or merge its cookies into
+  `config/cookies.txt`; by default spotdl now shares `config/cookies.txt` with yt-dlp
+- `usb:setup` — mode/Ventoy/payload/ISO/variant/persistence/downloads prompts and the execute-flow confirmations
+  refactored onto the shared `BaseCommand` helpers (prompt texts and behaviour unchanged)
+- Empty env-var values are now treated as unset for all resolver-routed `playlists:sync` parameters (previously
+  `MP3_QUALITY=""` was used verbatim)
 - `playlists:sync` — ffmpeg conversions now run with `-loglevel error` instead of `-loglevel warning`, silencing
   harmless warning noise (e.g. "timescale not set", "encoding as 24 bits-per-sample") that garbled the progress bars
 - **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube

@@ -30,19 +30,35 @@ All tools — `dosfstools`, `e2fsprogs`, `util-linux`, and the latest Ventoy rel
 ddev exec sudo bin/console usb:setup [options]
 ```
 
-### Options
+### Parameters
 
-| Flag                       | Short | Default                               | Description                                                      |
-|----------------------------|-------|---------------------------------------|------------------------------------------------------------------|
-| `--device /dev/sdX`        |       | prompted                              | Target USB block device                                          |
-| `--source-device /dev/sdY` |       | prompted ("Payload" choice)           | Duplicate payload from this already-set-up Ventoy stick          |
-| `--debian-iso /path.iso`   |       | prompted (download or local path)     | Debian live ISO to copy onto the stick                           |
-| `--persistence-size 2048`  |       | prompted (default 2048)               | Persistence image size in MiB                                    |
-| `--ventoy-bin /path`       |       | auto                                  | Path to `Ventoy2Disk.sh` (auto-detected)                         |
-| `--downloads-file /path`   |       | prompted (`config/usb-downloads.txt`) | File listing software URLs/local paths to copy onto `/software/` |
-| `--yes`                    | `-y`  | —                                     | Skip confirmation prompts                                        |
-| `--no-interaction`         | `-n`  | —                                     | Non-interactive: all args required via flags, no prompts         |
-| `--help`                   | `-h`  | —                                     | Show full option reference                                       |
+Resolution: CLI option → env var → prompt → default. **Env vars behave like their CLI option — they suppress the
+prompt.** The config keys are deliberately *not* part of value resolution: they only pre-fill the prompt defaults
+(the device/ISO/persistence questions fire every run on purpose), and prompt answers are written back to
+`config/usb-setup.json`. Only `cache_dir` resolves through the config file too (it is never prompted). usb:setup
+reads the same `.env` file as playlists:sync (`DOTENV_PATH` override supported). See the shared
+[Configuration & parameter resolution](../README.md#configuration--parameter-resolution) section in the README.
+
+| Parameter          | CLI option           | Env var                | Config key                             | Prompted when                                                                     | Default                            |
+|--------------------|----------------------|------------------------|----------------------------------------|-----------------------------------------------------------------------------------|------------------------------------|
+| Target device      | `--device`           | `USB_DEVICE`           | `device` (prompt default only)         | every interactive run (device list choice)                                        | —                                  |
+| Mode (update/redo) | `--update`           | `USB_UPDATE`           | —                                      | every interactive run unless CLI/env value                                        | auto (update when Ventoy detected) |
+| Ventoy install     | `--install-ventoy`   | `USB_INSTALL_VENTOY`   | `install_ventoy` (prompt default only) | every interactive run unless CLI/env value                                        | install/update                     |
+| Payload source     | `--source-device`    | `USB_SOURCE_DEVICE`    | `payload_source`, `source_device`      | every interactive run unless `--source-device`                                    | configuration                      |
+| Debian ISO         | `--debian-iso`       | `USB_DEBIAN_ISO`       | `iso_source`, `iso_path`               | every interactive run unless duplicating or CLI/env value                         | download                           |
+| ISO variant        | `--iso-variant`      | `USB_ISO_VARIANT`      | `iso_variant` (prompt default only)    | with the ISO prompt; a CLI/env value implies "download" and skips the ISO prompts | `standard`                         |
+| Persistence size   | `--persistence-size` | `USB_PERSISTENCE_SIZE` | `persistence_mib`                      | every interactive run when an ISO is used and no CLI/env value                    | `2048` MiB                         |
+| Ventoy binary      | `--ventoy-bin`       | `VENTOY_BIN`           | —                                      | never (auto-detected)                                                             | auto                               |
+| Downloads file     | `--downloads-file`   | `USB_DOWNLOADS_FILE`   | `download_sources`                     | every interactive run unless CLI/env value or duplicate mode                      | `config/usb-downloads.txt`         |
+| Cache dir          | `--cache-dir`        | `USB_CACHE_DIR`        | `cache_dir`                            | never                                                                             | `downloads/.cache`                 |
+| Skip confirmations | `--yes` / `-y`       | `USB_YES`              | —                                      | —                                                                                 | off                                |
+| Device name check  | —                    | —                      | `device_name`, `source_device_name`    | never (recorded automatically each interactive run)                               | —                                  |
+
+`--install-ventoy` takes `yes`/`no`; `USB_UPDATE`, `USB_INSTALL_VENTOY` and `USB_YES` accept `1/0`, `true/false`,
+`yes/no`. `--iso-variant` values: `standard`, `gnome`, `kde`, `cinnamon`, `lxde`, `lxqt`, `mate`, `xfce` — setting
+it downloads that variant without prompting, also in non-interactive mode. `--yes`/`-y`/`USB_YES` skips confirmation
+prompts (wipe/update/continue-anyway); `-n`/`--no-interaction` skips **all** prompts and implies `-y` — the device
+is then required (via `--device` or `USB_DEVICE`). `-h`/`--help` shows the full option reference.
 
 ## Commands
 
@@ -63,11 +79,21 @@ ddev exec sudo bin/console usb:setup --device /dev/sdX
 
 ### Non-interactive run
 
-All required args must be provided via flags. Confirmation prompts are skipped automatically:
+All required values must be provided via flags or env vars. Confirmation prompts are skipped automatically:
 
 ```bash
 ddev exec sudo bin/console usb:setup \
   --device /dev/sdX \
+  -n
+```
+
+Full non-interactive setup including an ISO download (the `USB_*` env vars work the same as their flags):
+
+```bash
+ddev exec sudo bin/console usb:setup \
+  --device /dev/sdX \
+  --iso-variant kde \
+  --persistence-size 4090 \
   -n
 ```
 
