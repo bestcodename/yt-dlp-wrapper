@@ -9,23 +9,71 @@ use App\Process\ProcOpenProcessRunner;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
-use Symfony\Component\Console\Helper\QuestionHelper;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
-use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
 
 class PlaylistsSyncCommand extends BaseCommand
 {
+    private const DEFAULT_FORMATS = 'original,mp3,wav,flac';
+    private const LOSSLESS_CODECS = ['flac', 'alac', 'wav', 'aiff', 'ape', 'wavpack', 'tak', 'tta'];
+    /**
+     * Guided tiers for the interactive min-odg prompt. Thresholds are estimated PEAQ ODG
+     * values (Objective Difference Grade: 0 = transparent … -4 = very annoying); the
+     * per-codec bitrate equivalents in the hints follow ODG_CALIBRATION via minKbpsForOdg().
+     *
+     * @var array<int, array{label: string, hint: string, odg: ?float}>
+     */
+    public const MIN_ODG_TIERS = [
+        1 => [
+            'label' => 'Archive / Pro Club Standard',
+            'hint' => 'ODG ≥ -0.2 | ≈320 kbps MP3 / 256 AAC / 182 Opus | perfect for large venue PAs',
+            'odg' => -0.2,
+        ],
+        2 => [
+            'label' => 'Semi-Pro Performance Minimum',
+            'hint' => 'ODG ≥ -1.0 | ≈192 kbps MP3 / 128 AAC / 96 Opus | minimum safe gig threshold',
+            'odg' => -1.0,
+        ],
+        3 => [
+            'label' => 'Preview Only',
+            'hint' => 'ODG ≥ -2.0 | ≈128 kbps MP3 / 89 AAC / 64 Opus | casual listening only',
+            'odg' => -2.0,
+        ],
+        4 => [
+            'label' => 'Off',
+            'hint' => 'disable quality filtering',
+            'odg' => null,
+        ],
+    ];
+    /**
+     * Estimated PEAQ ODG anchor points per codec family: [kbps, ODG], kbps strictly
+     * increasing, ODG non-decreasing. Sources of unknown codec use the MP3 curve
+     * (most conservative); lossless codecs are always ODG 0. Values between anchors
+     * are interpolated linearly; a virtual [0, -4.0] origin anchors the low end.
+     *
+     * @var array<string, list<array{0: float|int, 1: float}>>
+     */
+    private const ODG_CALIBRATION = [
+        'mp3' => [[64, -3.7], [96, -3.0], [128, -2.0], [160, -1.4], [192, -1.0], [256, -0.5], [320, -0.2]],
+        'aac' => [[64, -2.7], [96, -1.8], [128, -1.0], [160, -0.6], [192, -0.4], [256, -0.2], [320, -0.1]],
+        'opus' => [[64, -2.0], [96, -1.0], [128, -0.5], [160, -0.3], [192, -0.15], [256, -0.1]],
+        'vorbis' => [[64, -2.5], [96, -1.5], [128, -0.8], [160, -0.5], [192, -0.3], [256, -0.15]],
+    ];
     public const SOURCE_SPOTIFY = 'spotify';
     public const SOURCE_YTDLP = 'ytdlp';
+    private const VALID_FORMATS = ['original', 'mp3', 'wav', 'flac'];
     private ?string $cookiesFile;
     private string $extractorRetries;
     private string $ffmpegBin;
     private string $ffprobeBin;
     private SymfonyStyle $io;
     private ?string $limitRate;
+    private ?float $minOdg;
+    private string $minOdgMode;
+    private string $mp3Bitrate;
+    private string $mp3Mode;
     private string $mp3Quality;
     private int $pauseBetween;
     private string $retrySleep;
@@ -41,6 +89,31 @@ class PlaylistsSyncCommand extends BaseCommand
         $this->runner = $runner ?? new ProcOpenProcessRunner();
     }
 
+    private static function readTagsFromInfoJson(string $path): array
+    {
+        $j = json_decode((string)file_get_contents($path), true);
+
+        return is_array($j) ? self::mapInfoJsonToTags($j) : [];
+    }
+
+    /**
+     * Map a decoded yt-dlp .info.json to ffmpeg tags. Pure — unit-testable.
+     *
+     * @param array<string, mixed> $json
+     * @return array{title: string, artist: string, album: string, genre: string, comment: string, date: string}
+     */
+    private static function mapInfoJsonToTags(array $json): array
+    {
+        return [
+            'title' => (string)($json['title'] ?? ''),
+            'artist' => (string)($json['uploader'] ?? ($json['artist'] ?? '')),
+            'album' => (string)($json['playlist_title'] ?? ($json['album'] ?? '')),
+            'genre' => (string)($json['genre'] ?? ''),
+            'comment' => (string)($json['description'] ?? ''),
+            'date' => (string)($json['upload_date'] ?? ''),
+        ];
+    }
+
     protected function configure(): void
     {
         $this
@@ -48,7 +121,73 @@ class PlaylistsSyncCommand extends BaseCommand
             ->setDescription('Download SoundCloud/Spotify/YouTube playlists and convert to MP3/WAV/FLAC.')
             ->addOption('input', 'i', InputOption::VALUE_REQUIRED, 'Path to file with playlist URLs')
             ->addOption('out', 'o', InputOption::VALUE_REQUIRED, 'Base output directory')
-            ->addOption('playlists-dir', null, InputOption::VALUE_REQUIRED, 'Directory for M3U8 playlist files');
+            ->addOption('playlists-dir', null, InputOption::VALUE_REQUIRED, 'Directory for M3U8 playlist files')
+            ->addOption(
+                'min-odg',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Minimum estimated ODG, -4..0 (see --min-odg-mode)'
+            )
+            ->addOption(
+                'min-odg-mode',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Below --min-odg: "warn" (default) or "filter"'
+            )
+            ->addOption(
+                'formats',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Comma-separated output formats: original, mp3, wav, flac'
+            )
+            ->addOption('mp3-mode', null, InputOption::VALUE_REQUIRED, 'MP3 encoding: "cbr" (default) or "vbr"')
+            ->addOption('mp3-bitrate', null, InputOption::VALUE_REQUIRED, 'CBR bitrate in kbps (--mp3-mode=cbr only)')
+            ->addOption(
+                'mp3-quality',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'LAME VBR quality: 0 = highest, 9 = lowest (--mp3-mode=vbr only)'
+            )
+            ->addOption('library-dir', null, InputOption::VALUE_REQUIRED, 'Shared audio library directory')
+            ->addOption('archive-dir', null, InputOption::VALUE_REQUIRED, 'Download archive directory')
+            ->addOption(
+                'lib-filename-template',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'yt-dlp filename template for library files'
+            )
+            ->addOption(
+                'cookies',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Cookie file (Netscape format) used by both yt-dlp and spotdl'
+            )
+            ->addOption(
+                'ytdlp-cookies',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Cookie file for yt-dlp only (overrides --cookies)'
+            )
+            ->addOption(
+                'spotdl-cookies',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Cookie file for spotdl only (overrides --cookies)'
+            )
+            ->addOption('ytdlp-bin', null, InputOption::VALUE_REQUIRED, 'yt-dlp binary')
+            ->addOption('spotdl-bin', null, InputOption::VALUE_REQUIRED, 'spotdl binary')
+            ->addOption('ffmpeg-bin', null, InputOption::VALUE_REQUIRED, 'ffmpeg binary')
+            ->addOption('ffprobe-bin', null, InputOption::VALUE_REQUIRED, 'ffprobe binary')
+            ->addOption('extractor-retries', null, InputOption::VALUE_REQUIRED, 'yt-dlp --extractor-retries value')
+            ->addOption('retry-sleep', null, InputOption::VALUE_REQUIRED, 'yt-dlp --retry-sleep value')
+            ->addOption(
+                'sleep-requests',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'yt-dlp --sleep-requests value (number or min-max range)'
+            )
+            ->addOption('limit-rate', null, InputOption::VALUE_REQUIRED, 'yt-dlp --limit-rate value (e.g. 1M)')
+            ->addOption('pause-between', null, InputOption::VALUE_REQUIRED, 'Seconds to sleep between playlists');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -59,41 +198,135 @@ class PlaylistsSyncCommand extends BaseCommand
 
         $config = $this->loadConfig();
 
-        /** @var QuestionHelper $helper */
-        $helper = $this->getHelper('question');
+        // E-category: CLI option, env override, config-file fallback, or ddev-installed default
+        $this->ytDlpBin = $this->resolveParam(
+            $input->getOption('ytdlp-bin'),
+            'YTDLP_BIN',
+            $config,
+            'ytdlp_bin',
+            'yt-dlp'
+        );
+        $this->spotdlBin = $this->resolveParam(
+            $input->getOption('spotdl-bin'),
+            'SPOTDL_BIN',
+            $config,
+            'spotdl_bin',
+            'spotdl'
+        );
+        $this->ffmpegBin = $this->resolveParam(
+            $input->getOption('ffmpeg-bin'),
+            'FFMPEG_BIN',
+            $config,
+            'ffmpeg_bin',
+            'ffmpeg'
+        );
+        $this->ffprobeBin = $this->resolveParam(
+            $input->getOption('ffprobe-bin'),
+            'FFPROBE_BIN',
+            $config,
+            'ffprobe_bin',
+            'ffprobe'
+        );
+        $this->mp3Quality = $this->resolveParam(
+            $input->getOption('mp3-quality'),
+            'MP3_QUALITY',
+            $config,
+            'mp3_quality',
+            '0'
+        );
+        $this->mp3Bitrate = $this->resolveParam(
+            $input->getOption('mp3-bitrate'),
+            'MP3_BITRATE',
+            $config,
+            'mp3_bitrate',
+            '320'
+        );
+        if (!is_numeric($this->mp3Bitrate) || (int)$this->mp3Bitrate <= 0) {
+            $this->io->error(
+                "Invalid --mp3-bitrate / MP3_BITRATE value: {$this->mp3Bitrate} (expected a positive number, kbps)"
+            );
 
-        // E-category: env override or ddev-installed default
-        $this->ytDlpBin = getenv('YTDLP_BIN') ?: 'yt-dlp';
-        $this->spotdlBin = getenv('SPOTDL_BIN') ?: 'spotdl';
-        $this->ffmpegBin = getenv('FFMPEG_BIN') ?: 'ffmpeg';
-        $this->ffprobeBin = getenv('FFPROBE_BIN') ?: 'ffprobe';
-        $this->mp3Quality = getenv('MP3_QUALITY') !== false ? (string)getenv('MP3_QUALITY') : '0';
-        $formatsStr = getenv('FORMATS') ?: 'original,mp3,wav,flac';
+            return Command::FAILURE;
+        }
+        $this->mp3Mode = strtolower(
+            $this->resolveParam($input->getOption('mp3-mode'), 'MP3_MODE', $config, 'mp3_mode', 'cbr')
+        );
+        if (!in_array($this->mp3Mode, ['cbr', 'vbr'], true)) {
+            $this->io->error("Invalid --mp3-mode / MP3_MODE value: {$this->mp3Mode} (expected \"cbr\" or \"vbr\")");
 
-        $cookiesPath = dirname(__DIR__, 2).'/config/cookies.txt';
-        $this->cookiesFile = is_file($cookiesPath) ? $cookiesPath : null;
+            return Command::FAILURE;
+        }
 
-        // spotdl matches Spotify tracks on YouTube Music — its (optional) cookies are YT Music
-        // cookies, a different account/site than the yt-dlp SoundCloud cookies above.
-        $spotdlCookiePath = getenv('SPOTDL_COOKIE_FILE') ?: dirname(__DIR__, 2).'/config/spotdl-cookies.txt';
-        $this->spotdlCookieFile = is_file($spotdlCookiePath) ? $spotdlCookiePath : null;
+        // Formats: CLI → env → config; prompted when configured nowhere, every interactive run
+        // (like input/output — stops firing once an answer is persisted to the config file)
+        $formatsCli = $input->getOption('formats');
+        $formatsEnv = getenv('FORMATS') ?: null;
+        $formatsConfigured = $formatsCli !== null || $formatsEnv !== null || array_key_exists('formats', $config);
+        $formatsRaw = $formatsCli
+            ?? $formatsEnv
+            ?? (isset($config['formats']) ? (string)$config['formats'] : null)
+            ?? self::DEFAULT_FORMATS;
+
+        if ($input->isInteractive() && !$formatsConfigured) {
+            $formatsRaw = $this->askText(
+                $input,
+                $output,
+                '<question>Output formats</question> (comma-separated: original, mp3, wav, flac)',
+                $formatsRaw,
+                static fn(?string $v): string => self::parseFormatsAnswer($v)
+            );
+            $this->saveConfig(array_merge($this->loadConfig(), ['formats' => $formatsRaw]));
+        }
+
+        try {
+            $formatsStr = self::parseFormatsAnswer($formatsRaw);
+        } catch (RuntimeException $e) {
+            $this->io->error("Invalid --formats / FORMATS value: {$e->getMessage()}");
+
+            return Command::FAILURE;
+        }
+
+        // Cookies: one shared file for both tools by default (Netscape format holds multiple
+        // domains — e.g. SoundCloud cookies for yt-dlp plus YT Music cookies for spotdl),
+        // overridable per tool. A file is only passed on when it actually exists.
+        $genericCookies = $this->resolveParam(
+            $input->getOption('cookies'),
+            'COOKIES_FILE',
+            $config,
+            'cookies_file',
+            dirname(__DIR__, 2).'/config/cookies.txt'
+        );
+        $ytdlpCookies = $this->resolveParam(
+            $input->getOption('ytdlp-cookies'),
+            'YTDLP_COOKIE_FILE',
+            $config,
+            'ytdlp_cookie_file'
+        ) ?? $genericCookies;
+        $spotdlCookies = $this->resolveParam(
+            $input->getOption('spotdl-cookies'),
+            'SPOTDL_COOKIE_FILE',
+            $config,
+            'spotdl_cookie_file'
+        ) ?? $genericCookies;
+        $this->cookiesFile = is_file($ytdlpCookies) ? $ytdlpCookies : null;
+        $this->spotdlCookieFile = is_file($spotdlCookies) ? $spotdlCookies : null;
 
         // B-category: from CLI option, env, or config (prompt once if not set)
-        $inputFile = $input->getOption('input') ?? (getenv('INPUT_FILE') ?: ($config['input_file'] ?? null));
-        $baseOutDir = $input->getOption('out') ?? (getenv('OUTPUT_DIR') ?: ($config['output_dir'] ?? null));
+        $inputFile = $this->resolveParam($input->getOption('input'), 'INPUT_FILE', $config, 'input_file');
+        $baseOutDir = $this->resolveParam($input->getOption('out'), 'OUTPUT_DIR', $config, 'output_dir');
 
         if ($input->isInteractive()) {
             if (!$inputFile) {
                 $savedInput = $config['input_file'] ?? 'config/playlists.txt';
-                $q = new Question("Input file [<info>$savedInput</info>]: ", $savedInput);
-                $inputFile = $helper->ask($input, $output, $q);
+                $inputFile = $this->askText($input, $output, 'Input file', $savedInput);
             }
             if (!$baseOutDir) {
                 $savedOut = $config['output_dir'] ?? './downloads';
-                $q = new Question("Output directory [<info>$savedOut</info>]: ", $savedOut);
-                $baseOutDir = $helper->ask($input, $output, $q);
+                $baseOutDir = $this->askText($input, $output, 'Output directory', $savedOut);
             }
-            $this->saveConfig(array_merge($config, [
+            // reload fresh (not the stale $config captured at the top of execute()) so an
+            // earlier prompt save in this same run — e.g. formats — isn't clobbered
+            $this->saveConfig(array_merge($this->loadConfig(), [
                 'input_file' => $inputFile,
                 'output_dir' => $baseOutDir,
             ]));
@@ -103,13 +336,105 @@ class PlaylistsSyncCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        $this->extractorRetries = getenv('EXTRACTOR_RETRIES') ?: '10';
-        $this->retrySleep = getenv('RETRY_SLEEP') ?: 'exp=2:10:120';
-        $this->sleepRequests = $this->resolveSleepRequests(getenv('SLEEP_REQUESTS') ?: '2');
-        $this->limitRate = getenv('LIMIT_RATE') ?: null;
-        $this->pauseBetween = (int)(getenv('PAUSE_BETWEEN') ?: '2');
+        $this->extractorRetries = $this->resolveParam(
+            $input->getOption('extractor-retries'),
+            'EXTRACTOR_RETRIES',
+            $config,
+            'extractor_retries',
+            '10'
+        );
+        $this->retrySleep = $this->resolveParam(
+            $input->getOption('retry-sleep'),
+            'RETRY_SLEEP',
+            $config,
+            'retry_sleep',
+            'exp=2:10:120'
+        );
+        $this->sleepRequests = $this->resolveSleepRequests(
+            $this->resolveParam($input->getOption('sleep-requests'), 'SLEEP_REQUESTS', $config, 'sleep_requests', '2')
+        );
+        $this->limitRate = $this->resolveParam($input->getOption('limit-rate'), 'LIMIT_RATE', $config, 'limit_rate');
+        $this->pauseBetween = (int)$this->resolveParam(
+            $input->getOption('pause-between'),
+            'PAUSE_BETWEEN',
+            $config,
+            'pause_between',
+            '2'
+        );
 
-        $libFilenameTemplate = getenv('LIB_FILENAME_TEMPLATE') ?: '%(id)s - %(title)s';
+        // Min ODG: CLI → env → config; prompted once (and persisted) when configured nowhere
+        $minOdgCli = $input->getOption('min-odg');
+        $minOdgEnv = getenv('MIN_ODG') ?: null;
+        $minOdgConfigured = $minOdgCli !== null || $minOdgEnv !== null || array_key_exists('min_odg', $config);
+        $minOdgRaw = $minOdgCli
+            ?? $minOdgEnv
+            ?? (isset($config['min_odg']) ? (string)$config['min_odg'] : null);
+
+        if ($input->isInteractive() && !$minOdgConfigured) {
+            $this->io->section('Audio quality threshold (estimated ODG)');
+            $this->io->text([
+                'Please specify the minimum source audio quality for the playlist sync.',
+                'ODG: 0 = transparent … -4 = very annoying (PEAQ scale, estimated from codec + bitrate).',
+                '',
+                'Available options & use cases:',
+            ]);
+            foreach (self::MIN_ODG_TIERS as $num => $tier) {
+                $this->io->text("  [$num] <info>{$tier['label']}</info> ({$tier['hint']})");
+            }
+            $this->io->newLine();
+            $answer = $this->askText(
+                $input,
+                $output,
+                '<question>Minimum source audio baseline</question>'
+                .' (option 1-4, custom ODG value between -4 and 0, or empty = off)',
+                null,
+                static fn(?string $v): ?float => self::parseMinOdgAnswer($v)
+            );
+            $minOdgRaw = $answer !== null ? (string)$answer : null;
+            $this->saveConfig(array_merge($this->loadConfig(), ['min_odg' => $answer]));
+        }
+
+        if ($minOdgRaw !== null && (!is_numeric($minOdgRaw) || (float)$minOdgRaw < -4 || (float)$minOdgRaw > 0)) {
+            $this->io->error(
+                "Invalid --min-odg / MIN_ODG value: $minOdgRaw (expected a number between -4 and 0, ODG scale)"
+            );
+
+            return Command::FAILURE;
+        }
+        $this->minOdg = $minOdgRaw !== null ? (float)$minOdgRaw : null;
+
+        // Min ODG mode: prompted every interactive run while a minimum is active;
+        // a CLI option is an explicit answer and suppresses the prompt, env/config seed the default
+        $minOdgModeCli = $input->getOption('min-odg-mode');
+        $minOdgMode = $minOdgModeCli
+            ?? (getenv('MIN_ODG_MODE') ?: null)
+            ?? ($config['min_odg_mode'] ?? null)
+            ?? 'warn';
+        if ($input->isInteractive() && $minOdgModeCli === null && $this->minOdg !== null) {
+            $minOdgMode = $this->askChoice(
+                $input,
+                $output,
+                'Low-quality handling (warn = list in summary, filter = exclude)',
+                ['warn', 'filter'],
+                in_array($minOdgMode, ['warn', 'filter'], true) ? $minOdgMode : 'warn'
+            );
+            $this->saveConfig(array_merge($this->loadConfig(), ['min_odg_mode' => $minOdgMode]));
+        } elseif (!in_array($minOdgMode, ['warn', 'filter'], true)) {
+            $this->io->error(
+                "Invalid --min-odg-mode / MIN_ODG_MODE value: $minOdgMode (expected \"warn\" or \"filter\")"
+            );
+
+            return Command::FAILURE;
+        }
+        $this->minOdgMode = $minOdgMode;
+
+        $libFilenameTemplate = $this->resolveParam(
+            $input->getOption('lib-filename-template'),
+            'LIB_FILENAME_TEMPLATE',
+            $config,
+            'lib_filename_template',
+            '%(id)s - %(title)s'
+        );
 
         if (!is_file($inputFile)) {
             $this->io->error("Input file not found: $inputFile");
@@ -122,10 +447,27 @@ class PlaylistsSyncCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        $libraryDir = getenv('LIBRARY_DIR') ?: ($baseOutDir.DIRECTORY_SEPARATOR.'library');
-        $archiveDir = getenv('ARCHIVE_DIR') ?: ($baseOutDir.DIRECTORY_SEPARATOR.'.archive');
-        $playlistsDir = $input->getOption('playlists-dir')
-            ?? (getenv('PLAYLISTS_DIR') ?: ($baseOutDir.DIRECTORY_SEPARATOR.'playlists'));
+        $libraryDir = $this->resolveParam(
+            $input->getOption('library-dir'),
+            'LIBRARY_DIR',
+            $config,
+            'library_dir',
+            $baseOutDir.DIRECTORY_SEPARATOR.'library'
+        );
+        $archiveDir = $this->resolveParam(
+            $input->getOption('archive-dir'),
+            'ARCHIVE_DIR',
+            $config,
+            'archive_dir',
+            $baseOutDir.DIRECTORY_SEPARATOR.'.archive'
+        );
+        $playlistsDir = $this->resolveParam(
+            $input->getOption('playlists-dir'),
+            'PLAYLISTS_DIR',
+            $config,
+            'playlists_dir',
+            $baseOutDir.DIRECTORY_SEPARATOR.'playlists'
+        );
 
         foreach ([$libraryDir, $archiveDir] as $dir) {
             if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
@@ -185,6 +527,10 @@ class PlaylistsSyncCommand extends BaseCommand
         $this->io->text('Fetching playlist metadata...');
 
         $failed = [];
+        $lowQualityTracks = []; // track id => warn line; one entry per unique library file
+        $qualityCache = []; // srcPath => [?float abr, ?string codec, ?float odg]
+        $filteredTotal = 0;
+        $spotifyFilterNoteShown = false;
 
         $fetchBar = new ProgressBar($output, count($urls));
         $fetchBar->setFormat(' %current%/%max% [%bar%] %percent:3s%% %message%');
@@ -196,7 +542,7 @@ class PlaylistsSyncCommand extends BaseCommand
             $fetchBar->setMessage(parse_url($url, PHP_URL_PATH) ?? $url);
             $source = self::classifySourceUrl($url);
             try {
-                [$plTitle, , $plUploader, $plEntries] = $source === self::SOURCE_SPOTIFY
+                [$plTitle, , $plUploader, $plEntries, $plSkipped] = $source === self::SOURCE_SPOTIFY
                     ? $this->getSpotifyPlaylistIdentityAndEntries($url, $archiveDir)
                     : $this->getPlaylistIdentityAndEntries($url);
                 $playlists[] = [
@@ -204,6 +550,7 @@ class PlaylistsSyncCommand extends BaseCommand
                     'source' => $source,
                     'folder' => self::safeName(sprintf('%s - %s', $plUploader, $plTitle)),
                     'entries' => $plEntries,
+                    'skipped' => $plSkipped,
                 ];
             } catch (RuntimeException $e) {
                 $this->io->error($e->getMessage());
@@ -241,9 +588,27 @@ class PlaylistsSyncCommand extends BaseCommand
             $this->io->text("Playlist: $plFolder");
 
             $tool = $playlist['source'] === self::SOURCE_SPOTIFY ? 'spotdl' : 'yt-dlp';
+            if (
+                !$spotifyFilterNoteShown
+                && $this->minOdg !== null
+                && $this->minOdgMode === 'filter'
+                && $playlist['source'] === self::SOURCE_SPOTIFY
+            ) {
+                $this->io->text(
+                    'Note: the quality filter cannot skip Spotify downloads (spotdl); '
+                    .'tracks below the threshold are excluded after download.'
+                );
+                $spotifyFilterNoteShown = true;
+            }
             $this->io->text('Downloading originals...');
             $overallBar->setMessage('downloading...');
-            [$newCount, $archivedCount, $exit, $failedEntries] = $playlist['source'] === self::SOURCE_SPOTIFY
+            [
+                $newCount,
+                $archivedCount,
+                $exit,
+                $failedEntries,
+                $filteredEntries,
+            ] = $playlist['source'] === self::SOURCE_SPOTIFY
                 ? $this->downloadSpotifyOriginals($url, $originalLibDir, $archiveDir, $overallBar, $plEntries)
                 : $this->downloadYtDlpOriginals(
                     $url,
@@ -254,7 +619,7 @@ class PlaylistsSyncCommand extends BaseCommand
                     $plEntries
                 );
             $overallBar->setMessage('');
-            $failedCount = max(0, count($plEntries) - $newCount - $archivedCount);
+            $failedCount = max(0, count($plEntries) - $newCount - $archivedCount - count($filteredEntries));
             $summary = sprintf('Download: %d new, %d already in archive', $newCount, $archivedCount);
             if ($failedCount > 0) {
                 $summary .= sprintf(', %d failed', $failedCount);
@@ -266,7 +631,23 @@ class PlaylistsSyncCommand extends BaseCommand
                     $this->io->text(sprintf('  - %s (%s)', $entry['title'], $entry['id']));
                 }
             }
-            if ($exit !== 0) {
+            if ($filteredEntries) {
+                $filteredTotal += count($filteredEntries);
+                $this->io->text(sprintf('Skipped (below est. ODG %s):', self::formatOdg($this->minOdg)));
+                foreach ($filteredEntries as $entry) {
+                    $this->io->text(sprintf('  - %s (%s)', $entry['title'], $entry['id']));
+                }
+            }
+            if ($playlist['skipped']) {
+                $this->io->text('Skipped playlists (not downloaded):');
+                foreach ($playlist['skipped'] as $entry) {
+                    $this->io->text(sprintf('  - %s (%s)', $entry['title'], $entry['id']));
+                }
+            }
+            if ($exit !== 0 && $failedEntries === [] && $filteredEntries !== []) {
+                // yt-dlp exits nonzero when any entry errors; with only filter-skips that's expected.
+                $this->io->text("$tool exited with code $exit (tracks below the quality threshold); continuing.");
+            } elseif ($exit !== 0) {
                 $this->io->warning("$tool exited with code $exit for originals; continuing.");
                 $failed[] = "$plFolder — $tool exit code $exit";
             }
@@ -310,10 +691,54 @@ class PlaylistsSyncCommand extends BaseCommand
                 if (!$matches || !is_file($matches[0])) {
                     continue;
                 }
-                $srcPath = str_replace('\\', '/', realpath($matches[0]) ?: $matches[0]);
+                $srcPath = str_replace('\\', '/', (string)(realpath($matches[0]) ?: $matches[0]));
                 $infoJson = preg_replace('/\.\w+$/', '.info.json', $srcPath);
                 $coverJpg = preg_replace('/\.\w+$/', '.jpg', $srcPath);
-                $tags = is_file($infoJson) ? self::readTagsFromInfoJson($infoJson) : [];
+                $info = is_file($infoJson) ? json_decode((string)file_get_contents($infoJson), true) : null;
+                $tags = is_array($info) ? self::mapInfoJsonToTags($info) : [];
+                if ($this->minOdg !== null) {
+                    // a track can appear in many playlists — evaluate its library file once
+                    if (!array_key_exists($srcPath, $qualityCache)) {
+                        $abr = is_array($info) ? self::audioBitrateKbps($info) : null;
+                        $codec = is_array($info) ? self::audioCodec($info) : null;
+                        if ($abr === null) {
+                            [$abr, $probedCodec] = $this->probeAudioProperties($srcPath);
+                            $codec ??= $probedCodec;
+                        }
+                        $qualityCache[$srcPath] = [
+                            $abr,
+                            $codec,
+                            $abr !== null ? self::estimateOdg($codec, $abr) : null,
+                        ];
+                    }
+                    [$abr, $codec, $odg] = $qualityCache[$srcPath];
+                    if ($odg !== null && $odg < $this->minOdg) {
+                        if (!isset($lowQualityTracks[$entry['id']])) {
+                            // set-playlist entries often carry no title; sidecar-less files
+                            // (pre-info.json downloads) fall back to the library filename
+                            $title = trim((string)($entry['title'] ?? ''));
+                            if ($title === '') {
+                                $title = trim((string)($tags['title'] ?? ''));
+                            }
+                            if ($title === '') {
+                                $title = self::titleFromFilename($srcPath, (string)$entry['id']);
+                            }
+                            $lowQualityTracks[$entry['id']] = sprintf(
+                                '%s (%s): %s kbps %s, est. ODG %s',
+                                $title,
+                                $entry['id'],
+                                self::formatKbps($abr),
+                                self::normalizeCodec($codec),
+                                self::formatOdg($odg)
+                            );
+                        }
+                        if ($this->minOdgMode === 'filter') {
+                            // keep low-quality originals (e.g. downloaded before the threshold
+                            // existed) out of conversions and playlist files; the file stays on disk
+                            continue;
+                        }
+                    }
+                }
 
                 if (in_array('original', $formatsRequested, true)) {
                     $m3uEntries['original'][] = $srcPath;
@@ -338,7 +763,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 $output->writeln('');
             }
 
-            foreach (['mp3', 'wav', 'flac'] as $fmt) {
+            foreach (['original', 'mp3', 'wav', 'flac'] as $fmt) {
                 if (!in_array($fmt, $formatsRequested, true)) {
                     continue;
                 }
@@ -367,46 +792,34 @@ class PlaylistsSyncCommand extends BaseCommand
             $this->io->warning(array_merge(['The following playlists had errors:'], $failed));
         }
 
+        if ($lowQualityTracks !== []) {
+            $this->io->warning(
+                array_merge(
+                    [
+                        sprintf(
+                            '%d track(s) below est. ODG %s in the library%s:',
+                            count($lowQualityTracks),
+                            self::formatOdg($this->minOdg),
+                            $this->minOdgMode === 'filter' ? ' (excluded from playlists)' : ''
+                        ),
+                    ],
+                    $lowQualityTracks
+                )
+            );
+        }
+        if ($filteredTotal > 0) {
+            $this->io->text(
+                sprintf(
+                    'Skipped %d track(s) below est. ODG %s (quality filter).',
+                    $filteredTotal,
+                    self::formatOdg($this->minOdg)
+                )
+            );
+        }
+
         $this->io->success('All done.');
 
         return Command::SUCCESS;
-    }
-
-    private function loadDotenv(): void
-    {
-        $candidates = [
-            getenv('DOTENV_PATH') ?: null,
-            getcwd().DIRECTORY_SEPARATOR.'.env',
-            dirname(__DIR__, 2).DIRECTORY_SEPARATOR.'.env',
-        ];
-        foreach (array_filter($candidates) as $path) {
-            if (!is_file($path)) {
-                continue;
-            }
-            $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-            if ($lines === false) {
-                continue;
-            }
-            foreach ($lines as $line) {
-                $line = trim($line);
-                if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
-                    continue;
-                }
-                [$k, $v] = array_map('trim', explode('=', $line, 2));
-                if ($v !== '' && (($v[0] === '"' && str_ends_with($v, '"')) || ($v[0] === "'" && str_ends_with(
-                                $v,
-                                "'"
-                            )))) {
-                    $v = substr($v, 1, -1);
-                }
-                $v = preg_replace_callback('/\$\{([A-Z0-9_]+)\}/i', static function ($m) {
-                    return getenv($m[1]) !== false ? (string)getenv($m[1]) : '';
-                }, $v);
-                putenv("$k=$v");
-                $_ENV[$k] = $_SERVER[$k] = $v;
-            }
-            break;
-        }
     }
 
     protected function loadConfig(): array
@@ -432,6 +845,29 @@ class PlaylistsSyncCommand extends BaseCommand
         return dirname(__DIR__, 2).'/config/soundcloud-download.json';
     }
 
+    /**
+     * Parses a comma-separated formats answer/value against VALID_FORMATS: trims each entry,
+     * drops empties, dedups, and rejects unknown names. Throws on an empty or invalid list so
+     * QuestionHelper re-asks (and non-interactive callers get a clear error). Pure — unit-testable.
+     */
+    public static function parseFormatsAnswer(?string $answer): string
+    {
+        $entries = array_values(array_unique(array_filter(array_map('trim', explode(',', (string)$answer)))));
+        if ($entries === []) {
+            throw new RuntimeException(
+                'Expected a comma-separated list of formats ('.implode(', ', self::VALID_FORMATS)."), got: $answer"
+            );
+        }
+        $unknown = array_diff($entries, self::VALID_FORMATS);
+        if ($unknown !== []) {
+            throw new RuntimeException(
+                'Unknown format(s): '.implode(', ', $unknown).' (expected: '.implode(', ', self::VALID_FORMATS).')'
+            );
+        }
+
+        return implode(',', $entries);
+    }
+
     private function resolveSleepRequests(string $raw): string
     {
         $raw = trim($raw);
@@ -448,6 +884,30 @@ class PlaylistsSyncCommand extends BaseCommand
         return is_numeric($raw) ? (string)(float)$raw : '2';
     }
 
+    /**
+     * Parses an answer to the guided min-odg prompt: a MIN_ODG_TIERS option number (1-4), a
+     * custom ODG value in [-4, 0], or empty/'-'/'off' for off (null). Positive kbps-style
+     * numbers are rejected to avoid silent unit ambiguity. Throws on anything else so
+     * QuestionHelper re-asks. Pure — unit-testable.
+     */
+    public static function parseMinOdgAnswer(?string $answer): ?float
+    {
+        $answer = trim(str_replace("\u{2212}", '-', (string)$answer));
+        if ($answer === '' || $answer === '-' || strcasecmp($answer, 'off') === 0) {
+            return null;
+        }
+        if (preg_match('/^[1-4]$/', $answer) === 1) {
+            return self::MIN_ODG_TIERS[(int)$answer]['odg'];
+        }
+        if (!is_numeric($answer) || (float)$answer < -4 || (float)$answer > 0) {
+            throw new RuntimeException(
+                "Expected an option (1-4), an ODG value between -4 and 0 (e.g. -1.5), or empty for off, got: $answer"
+            );
+        }
+
+        return (float)$answer;
+    }
+
     private function requireBinary(string $bin, ?string $versionArg = null): void
     {
         $cmd = escapeshellcmd($bin).($versionArg ? ' '.$versionArg : '');
@@ -457,7 +917,7 @@ class PlaylistsSyncCommand extends BaseCommand
         }
     }
 
-    private function runCmd(string $cmd, ?callable $onLine = null): array
+    private function runCmd(string $cmd, ?callable $onLine = null, ?callable $onErrLine = null): array
     {
         return $this->runner->run(
             $cmd,
@@ -468,9 +928,12 @@ class PlaylistsSyncCommand extends BaseCommand
                     }
                 }
             },
-            function (string $chunk): void {
+            function (string $chunk) use ($onErrLine): void {
                 foreach (preg_split('/\R/u', $chunk) as $line) {
                     if ($line !== '') {
+                        if ($onErrLine !== null) {
+                            $onErrLine($line);
+                        }
                         $this->io->getErrorStyle()->text($line);
                     }
                 }
@@ -501,7 +964,7 @@ class PlaylistsSyncCommand extends BaseCommand
      * Spotify pendant to getPlaylistIdentityAndEntries(): `spotdl save` writes the playlist
      * metadata to a JSON file, which is then mapped onto the same identity tuple.
      *
-     * @return array{string, string, string, list<array{id: string, title: string}>}
+     * @return array{string, string, string, list<array{id: string, title: string}>, list<array{id: string, title: string}>}
      */
     private function getSpotifyPlaylistIdentityAndEntries(string $url, string $archiveDir): array
     {
@@ -533,12 +996,13 @@ class PlaylistsSyncCommand extends BaseCommand
 
     /**
      * Maps decoded .spotdl save data (JSON array of Song dicts written by `spotdl save`) to the
-     * [title, id, uploader, entries] tuple getPlaylistIdentityAndEntries() yields for yt-dlp
-     * sources. The save file carries no playlist-owner field, so the uploader is always
-     * 'Spotify'. Pure — unit-testable.
+     * [title, id, uploader, entries, skippedPlaylists] tuple getPlaylistIdentityAndEntries()
+     * yields for yt-dlp sources. The save file carries no playlist-owner field, so the uploader
+     * is always 'Spotify'; it also never contains nested playlists, so skippedPlaylists is
+     * always empty. Pure — unit-testable.
      *
      * @param list<array<string, mixed>> $songs
-     * @return array{string, string, string, list<array{id: string, title: string}>}
+     * @return array{string, string, string, list<array{id: string, title: string}>, list<array{id: string, title: string}>}
      */
     private static function parseSpotdlSaveData(array $songs, string $url): array
     {
@@ -560,7 +1024,7 @@ class PlaylistsSyncCommand extends BaseCommand
             $entries[] = ['id' => $songId, 'title' => (string)($song['name'] ?? '')];
         }
 
-        return [$title, $id, 'Spotify', $entries];
+        return [$title, $id, 'Spotify', $entries, []];
     }
 
     /**
@@ -615,14 +1079,41 @@ class PlaylistsSyncCommand extends BaseCommand
         $id = $json['id'] ?? md5($url);
         $uploader = $json['uploader'] ?? ($json['channel'] ?? 'SoundCloud');
         $entries = [];
+        $skippedPlaylists = [];
         foreach ($json['entries'] ?? [] as $e) {
             $tid = (string)($e['id'] ?? '');
-            if ($tid !== '') {
-                $entries[] = ['id' => $tid, 'title' => (string)($e['title'] ?? '')];
+            if ($tid === '') {
+                continue;
             }
+            if (self::isNestedPlaylistEntry($e)) {
+                $skippedPlaylists[] = ['id' => $tid, 'title' => (string)($e['title'] ?? '')];
+                continue;
+            }
+            $entries[] = ['id' => $tid, 'title' => (string)($e['title'] ?? '')];
         }
 
-        return [$title, $id, $uploader, $entries];
+        return [$title, $id, $uploader, $entries, $skippedPlaylists];
+    }
+
+    /**
+     * Whether a flat-playlist entry is itself a playlist (e.g. a liked set inside SoundCloud
+     * likes). Such entries are never downloaded recursively and must not count as tracks.
+     * SoundCloud liked sets arrive as _type "url" without ie_key — only the /sets/ URL gives
+     * them away. Pure — unit-testable.
+     *
+     * @param array<string, mixed> $e
+     */
+    private static function isNestedPlaylistEntry(array $e): bool
+    {
+        if (($e['_type'] ?? '') === 'playlist') {
+            return true;
+        }
+        $ieKey = (string)($e['ie_key'] ?? ($e['extractor_key'] ?? ''));
+        if (in_array($ieKey, ['SoundcloudSet', 'SoundcloudPlaylist', 'YoutubeTab', 'YoutubePlaylist'], true)) {
+            return true;
+        }
+
+        return (bool)preg_match('~soundcloud\.com/[^/]+/sets/~', (string)($e['url'] ?? ''));
     }
 
     private static function safeName(string $name): string
@@ -640,8 +1131,8 @@ class PlaylistsSyncCommand extends BaseCommand
      * are those still missing from the archive after the run).
      *
      * @param list<array{id: string, title: string}> $plEntries
-     * @return array{int, int, int, list<array{id: string, title: string}>}
-     *         [newCount, archivedCount, exitCode, failedEntries]
+     * @return array{int, int, int, list<array{id: string, title: string}>, list<array{id: string, title: string}>}
+     *         [newCount, archivedCount, exitCode, failedEntries, filteredEntries]
      */
     private function downloadSpotifyOriginals(
         string $url,
@@ -668,6 +1159,8 @@ class PlaylistsSyncCommand extends BaseCommand
             self::countArchived($plEntries, $pre),
             $exit,
             self::missingEntries($plEntries, $post),
+            // spotdl has no per-format bitrate filter; the quality filter never applies here.
+            [],
         ];
     }
 
@@ -821,7 +1314,8 @@ class PlaylistsSyncCommand extends BaseCommand
             $originalLibDir.DIRECTORY_SEPARATOR.$libFilenameTemplate.'.%(ext)s'
         );
 
-        $dlArgs = ['-f', 'bestaudio/best'];
+        $filterOdg = $this->minOdgMode === 'filter' ? $this->minOdg : null;
+        $dlArgs = ['-f', self::buildFormatSelector($filterOdg)];
         if ($this->cookiesFile) {
             $dlArgs[] = '--cookies';
             $dlArgs[] = $this->cookiesFile;
@@ -847,6 +1341,7 @@ class PlaylistsSyncCommand extends BaseCommand
 
         $newCount = 0;
         $doneIds = [];
+        $filteredIds = [];
         [$exit] = $this->runCmd(
             implode(' ', $ytCmd),
             function (string $line) use ($overallBar, &$newCount, &$doneIds): void {
@@ -857,6 +1352,12 @@ class PlaylistsSyncCommand extends BaseCommand
                     $newCount++;
                     $doneIds[substr($line, 5)] = true;
                 }
+            },
+            $filterOdg === null ? null : static function (string $line) use (&$filteredIds): void {
+                $id = self::matchFormatUnavailableId($line);
+                if ($id !== null) {
+                    $filteredIds[$id] = true;
+                }
             }
         );
 
@@ -864,8 +1365,87 @@ class PlaylistsSyncCommand extends BaseCommand
             $newCount,
             self::countArchived($plEntries, $preArchivedIds),
             $exit,
-            self::missingEntries($plEntries, $preArchivedIds + $doneIds),
+            self::missingEntries($plEntries, $preArchivedIds + $doneIds + $filteredIds),
+            array_values(array_filter($plEntries, static fn(array $e) => isset($filteredIds[$e['id']]))),
         ];
+    }
+
+    /**
+     * yt-dlp format selector, optionally constrained to a minimum estimated ODG. yt-dlp
+     * cannot compute ODG, so the threshold is inverted per codec into a minimum bitrate
+     * (via minKbpsForOdg) and expressed as one branch per codec prefix; lossless codecs
+     * always pass. Uses fail-closed filters ([abr>=X], not [abr>=?X]) and codec prefixes:
+     * formats with unknown bitrate or codec are excluded, so nothing silently falls
+     * through the threshold. Pure — unit-testable.
+     */
+    private static function buildFormatSelector(?float $minOdg): string
+    {
+        if ($minOdg === null) {
+            return 'bestaudio/best';
+        }
+        // best-codec-first: yt-dlp picks the first branch with a matching format
+        $codecPrefixes = ['opus' => ['opus'], 'aac' => ['mp4a', 'aac'], 'vorbis' => ['vorbis'], 'mp3' => ['mp3']];
+        $thresholds = [];
+        foreach ($codecPrefixes as $codec => $prefixes) {
+            $kbps = self::minKbpsForOdg($codec, $minOdg);
+            if ($kbps === null) {
+                continue; // codec cannot reach the threshold at any bitrate
+            }
+            foreach ($prefixes as $prefix) {
+                $thresholds[$prefix] = self::formatKbps($kbps);
+            }
+        }
+        $branches = [];
+        foreach (['bestaudio', 'best'] as $base) {
+            foreach (['flac', 'alac', 'pcm'] as $lossless) {
+                $branches[] = "{$base}[acodec^={$lossless}]";
+            }
+            foreach (['abr', 'tbr'] as $key) {
+                foreach ($thresholds as $prefix => $t) {
+                    $branches[] = "{$base}[acodec^={$prefix}][{$key}>={$t}]";
+                }
+            }
+        }
+
+        return implode('/', $branches);
+    }
+
+    /**
+     * Inverse of estimateOdg for one codec family: the lowest bitrate whose estimated ODG
+     * reaches the threshold, rounded up to 0.1 kbps so rounding never admits worse quality.
+     * Null when the codec cannot reach the threshold at any bitrate (fail-closed: its
+     * branch is omitted from the format selector). Pure — unit-testable.
+     */
+    public static function minKbpsForOdg(string $codec, float $minOdg): ?float
+    {
+        $anchors = self::ODG_CALIBRATION[$codec] ?? null;
+        if ($anchors === null) {
+            return null;
+        }
+        if ($minOdg <= -4.0) {
+            return 0.0;
+        }
+        $points = [[0.0, -4.0], ...$anchors];
+        if ($minOdg > $points[count($points) - 1][1]) {
+            return null;
+        }
+        for ($i = 1, $n = count($points); $i < $n; $i++) {
+            [$k0, $o0] = $points[$i - 1];
+            [$k1, $o1] = $points[$i];
+            if ($minOdg <= $o1) {
+                $kbps = $o1 === $o0 ? $k0 : $k0 + ($k1 - $k0) * (($minOdg - $o0) / ($o1 - $o0));
+
+                return ceil($kbps * 10) / 10;
+            }
+        }
+
+        return null;
+    }
+
+    /** Kbps value for display / format selectors: "128" not "128.0". Pure — unit-testable. */
+    private static function formatKbps(float $kbps): string
+    {
+        return rtrim(rtrim(sprintf('%.1f', $kbps), '0'), '.');
     }
 
     /**
@@ -895,29 +1475,172 @@ class PlaylistsSyncCommand extends BaseCommand
         return $ids;
     }
 
-    private static function readTagsFromInfoJson(string $path): array
+    /**
+     * Track id from a yt-dlp "Requested format is not available" stderr line, null otherwise.
+     * Pure — unit-testable.
+     */
+    private static function matchFormatUnavailableId(string $line): ?string
     {
-        $j = json_decode((string)file_get_contents($path), true);
+        return preg_match('~ERROR:\s+\[[^]]+]\s+(\S+):\s+Requested format is not available~', $line, $m)
+            ? $m[1]
+            : null;
+    }
 
-        return is_array($j) ? self::mapInfoJsonToTags($j) : [];
+    /** ODG value for display: "-1.5", "-0.2", "0". Pure — unit-testable. */
+    private static function formatOdg(float $odg): string
+    {
+        $s = rtrim(rtrim(sprintf('%.2f', $odg), '0'), '.');
+
+        return $s === '-0' ? '0' : $s;
     }
 
     /**
-     * Map a decoded yt-dlp .info.json to ffmpeg tags. Pure — unit-testable.
+     * Audio bitrate in kbps from a decoded .info.json, falling back to total bitrate.
+     * Pure — unit-testable.
      *
-     * @param array<string, mixed> $json
-     * @return array{title: string, artist: string, album: string, genre: string, comment: string, date: string}
+     * @param array<string, mixed> $info
      */
-    private static function mapInfoJsonToTags(array $json): array
+    private static function audioBitrateKbps(array $info): ?float
     {
-        return [
-            'title' => (string)($json['title'] ?? ''),
-            'artist' => (string)($json['uploader'] ?? ($json['artist'] ?? '')),
-            'album' => (string)($json['playlist_title'] ?? ($json['album'] ?? '')),
-            'genre' => (string)($json['genre'] ?? ''),
-            'comment' => (string)($json['description'] ?? ''),
-            'date' => (string)($json['upload_date'] ?? ''),
+        foreach (['abr', 'tbr'] as $key) {
+            $v = $info[$key] ?? null;
+            if (is_numeric($v) && (float)$v > 0) {
+                return (float)$v;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Audio codec from a decoded .info.json, null when absent or "none".
+     * Pure — unit-testable.
+     *
+     * @param array<string, mixed> $info
+     */
+    private static function audioCodec(array $info): ?string
+    {
+        $v = $info['acodec'] ?? null;
+
+        return is_string($v) && trim($v) !== '' && strcasecmp(trim($v), 'none') !== 0 ? trim($v) : null;
+    }
+
+    /**
+     * Audio bitrate (kbps) and codec name read from the file itself, for tracks without a
+     * usable .info.json bitrate (spotdl writes no sidecar). Prefers the audio stream's
+     * bit_rate, falls back to the container's (streams in some containers report N/A).
+     * Keyed output (default=nw=1) keeps the codec and bitrate lines unambiguous.
+     *
+     * @return array{0: ?float, 1: ?string} [kbps, codec_name]
+     */
+    private function probeAudioProperties(string $path): array
+    {
+        if (!is_file($path)) {
+            return [null, null];
+        }
+        $args = [
+            '-v',
+            'error',
+            '-select_streams',
+            'a:0',
+            '-show_entries',
+            'stream=codec_name,bit_rate:format=bit_rate',
+            '-of',
+            'default=nw=1',
+            $path,
         ];
+        $cmd = escapeshellcmd($this->ffprobeBin).' '.implode(' ', array_map('escapeshellarg', $args));
+        [$exit, $out] = $this->runCmd($cmd, fn() => null);
+        if ($exit !== 0) {
+            return [null, null];
+        }
+        $kbps = null;
+        $codec = null;
+        foreach (preg_split('/\R/', trim($out)) as $line) {
+            $line = trim($line);
+            if ($codec === null && preg_match('/^codec_name=(.+)$/', $line, $m)) {
+                $codec = trim($m[1]);
+            } elseif ($kbps === null && preg_match('/^bit_rate=(.+)$/', $line, $m)) {
+                $v = trim($m[1]);
+                if (is_numeric($v) && (float)$v > 0) {
+                    $kbps = (float)$v / 1000.0;
+                }
+            }
+        }
+
+        return [$kbps, $codec];
+    }
+
+    /**
+     * Estimated PEAQ ODG for a source, interpolated from ODG_CALIBRATION: lossless is
+     * always 0, unknown codecs use the MP3 curve (most conservative), and bitrates above
+     * a codec's highest anchor clamp to that anchor's ODG (a 400 kbps MP3 is still MP3,
+     * not transparent). Pure — unit-testable.
+     */
+    public static function estimateOdg(?string $acodec, float $kbps): float
+    {
+        $codec = self::normalizeCodec($acodec);
+        if ($codec === 'lossless') {
+            return 0.0;
+        }
+        if ($kbps <= 0) {
+            return -4.0;
+        }
+        $points = [[0.0, -4.0], ...(self::ODG_CALIBRATION[$codec] ?? self::ODG_CALIBRATION['mp3'])];
+        $last = $points[count($points) - 1];
+        if ($kbps >= $last[0]) {
+            return $last[1];
+        }
+        for ($i = 1, $n = count($points); $i < $n; $i++) {
+            if ($kbps <= $points[$i][0]) {
+                [$k0, $o0] = $points[$i - 1];
+                [$k1, $o1] = $points[$i];
+
+                return $o0 + ($o1 - $o0) * (($kbps - $k0) / ($k1 - $k0));
+            }
+        }
+
+        return $last[1];
+    }
+
+    /**
+     * Canonical codec family for an acodec / ffprobe codec_name value: "mp3", "aac",
+     * "opus", "vorbis", "lossless", or "unknown". Pure — unit-testable.
+     */
+    public static function normalizeCodec(?string $acodec): string
+    {
+        $c = strtolower(trim((string)$acodec));
+        if ($c === '' || $c === 'none') {
+            return 'unknown';
+        }
+        if (str_starts_with($c, 'mp4a') || str_starts_with($c, 'aac')) {
+            return 'aac';
+        }
+        if (str_starts_with($c, 'mp3') || $c === 'mpga' || $c === 'libmp3lame') {
+            return 'mp3';
+        }
+        if (str_starts_with($c, 'opus') || $c === 'libopus') {
+            return 'opus';
+        }
+        if (str_starts_with($c, 'vorbis') || $c === 'libvorbis') {
+            return 'vorbis';
+        }
+        if (str_starts_with($c, 'pcm_') || in_array($c, self::LOSSLESS_CODECS, true)) {
+            return 'lossless';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Track title recovered from a "{id} - {title}.{ext}" library filename, for entries
+     * without a title in the playlist metadata or an .info.json sidecar. Pure — unit-testable.
+     */
+    private static function titleFromFilename(string $srcPath, string $id): string
+    {
+        $base = pathinfo($srcPath, PATHINFO_FILENAME);
+
+        return trim((string)preg_replace('/^'.preg_quote($id, '/').'\s*-\s*/', '', $base));
     }
 
     private function ensureConverted(
@@ -944,7 +1667,9 @@ class PlaylistsSyncCommand extends BaseCommand
 
         $cmd = self::buildFfmpegArgs(
             $this->ffmpegBin,
+            $this->mp3Mode,
             $this->mp3Quality,
+            $this->mp3Bitrate,
             $sourcePath,
             $targetPath,
             $format,
@@ -1014,7 +1739,9 @@ class PlaylistsSyncCommand extends BaseCommand
      */
     private static function buildFfmpegArgs(
         string $ffmpegBin,
+        string $mp3Mode,
         string $mp3Quality,
+        string $mp3Bitrate,
         string $sourcePath,
         string $targetPath,
         string $format,
@@ -1037,8 +1764,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 ...($hasCover ? ['-map', '1:0', '-c:v', 'mjpeg', '-disposition:v:0', 'attached_pic'] : []),
                 '-c:a',
                 'libmp3lame',
-                '-q:a',
-                $mp3Quality,
+                ...($mp3Mode === 'vbr' ? ['-q:a', $mp3Quality] : ['-b:a', "{$mp3Bitrate}k"]),
                 '-id3v2_version',
                 '3',
             ]),

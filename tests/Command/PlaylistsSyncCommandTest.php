@@ -8,12 +8,45 @@ use App\Command\PlaylistsSyncCommand;
 use App\Tests\Support\FakeProcessRunner;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use ReflectionClassConstant;
 use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
 
 final class PlaylistsSyncCommandTest extends TestCase
 {
+    /**
+     * @return array<string, array{array<string, mixed>, float|null}>
+     */
+    public static function audioBitrateKbpsProvider(): array
+    {
+        return [
+            'abr' => [['abr' => 320], 320.0],
+            'abr wins over tbr' => [['abr' => 128, 'tbr' => 256], 128.0],
+            'tbr fallback' => [['tbr' => 128.5], 128.5],
+            'numeric string abr' => [['abr' => '96'], 96.0],
+            'zero abr falls back to tbr' => [['abr' => 0, 'tbr' => 64], 64.0],
+            'non-numeric' => [['abr' => 'none'], null],
+            'empty json' => [[], null],
+        ];
+    }
+
+    /**
+     * @return array<string, array{array<string, mixed>, ?string}>
+     */
+    public static function audioCodecProvider(): array
+    {
+        return [
+            'opus' => [['acodec' => 'opus'], 'opus'],
+            'mp4a profile' => [['acodec' => 'mp4a.40.2'], 'mp4a.40.2'],
+            'none means absent' => [['acodec' => 'none'], null],
+            'empty string' => [['acodec' => ''], null],
+            'whitespace only' => [['acodec' => '   '], null],
+            'non-string' => [['acodec' => 123], null],
+            'missing key' => [[], null],
+        ];
+    }
+
     /**
      * @return array<string, array{string, string}>
      */
@@ -32,6 +65,51 @@ final class PlaylistsSyncCommandTest extends TestCase
             'youtube' => ['https://www.youtube.com/playlist?list=PL123', 'ytdlp'],
             'garbage' => ['not-a-url', 'ytdlp'],
             'empty' => ['', 'ytdlp'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string, float, float}>
+     */
+    public static function estimateOdgProvider(): array
+    {
+        return [
+            'mp3 320 anchor' => ['mp3', 320.0, -0.2],
+            'mp3 192 anchor' => ['mp3', 192.0, -1.0],
+            'mp3 128 anchor' => ['mp3', 128.0, -2.0],
+            'mp3 interpolated 224' => ['mp3', 224.0, -0.75],
+            'mp3 below lowest anchor' => ['mp3', 32.0, -3.85],
+            'mp3 above top clamps to top anchor' => ['mp3', 400.0, -0.2],
+            'zero kbps is worst' => ['mp3', 0.0, -4.0],
+            'opus 96 anchor' => ['opus', 96.0, -1.0],
+            'opus 128 anchor' => ['opus', 128.0, -0.5],
+            'aac via mp4a codec string' => ['mp4a.40.2', 128.0, -1.0],
+            'vorbis anchor' => ['vorbis', 128.0, -0.8],
+            'lossless flac' => ['flac', 900.0, 0.0],
+            'lossless pcm' => ['pcm_s16le', 1411.0, 0.0],
+            'unknown codec uses mp3 curve' => ['weird-codec', 192.0, -1.0],
+            'null codec uses mp3 curve' => [null, 128.0, -2.0],
+        ];
+    }
+
+    /**
+     * @return array<string, array{string, string|null}>
+     */
+    public static function formatUnavailableLineProvider(): array
+    {
+        return [
+            'soundcloud entry' => [
+                'ERROR: [soundcloud] 123456: Requested format is not available. '
+                .'Use --list-formats for a list of available formats',
+                '123456',
+            ],
+            'youtube entry' => [
+                'ERROR: [youtube] dQw4w9WgXcQ: Requested format is not available',
+                'dQw4w9WgXcQ',
+            ],
+            'other error' => ['ERROR: [soundcloud] 123456: Unable to download JSON metadata', null],
+            'plain warning' => ['WARNING: unable to obtain file audio codec with ffprobe', null],
+            'unrelated text' => ['Requested format is not available', null],
         ];
     }
 
@@ -79,7 +157,144 @@ final class PlaylistsSyncCommandTest extends TestCase
     }
 
     /**
-     * @return array<string, array{list<array<string, mixed>>, string, array{string, string, string, list<array{id: string, title: string}>}}>
+     * @return array<string, array{string, float, ?float}>
+     */
+    public static function minKbpsForOdgProvider(): array
+    {
+        return [
+            'mp3 -1.0 inverts to 192' => ['mp3', -1.0, 192.0],
+            'mp3 -2.0 inverts to 128' => ['mp3', -2.0, 128.0],
+            'opus -1.0 inverts to 96' => ['opus', -1.0, 96.0],
+            'aac -0.5 interpolated' => ['aac', -0.5, 176.0],
+            'vorbis -1.0 interpolated' => ['vorbis', -1.0, 118.9],
+            'mp3 -0.1 unreachable' => ['mp3', -0.1, null],
+            'vorbis -0.1 unreachable' => ['vorbis', -0.1, null],
+            'worst threshold accepts anything' => ['mp3', -4.0, 0.0],
+            'unknown codec family' => ['weird', -1.0, null],
+        ];
+    }
+
+    /**
+     * @return array<string, array{array<string, mixed>, bool}>
+     */
+    public static function nestedPlaylistEntryProvider(): array
+    {
+        return [
+            'type playlist' => [['_type' => 'playlist', 'id' => '1', 'title' => 'Set'], true],
+            'soundcloud set url' => [
+                [
+                    '_type' => 'url',
+                    'id' => '949270006',
+                    'title' => 'Tekno Collection',
+                    'url' => 'https://soundcloud.com/dj/sets/tekno',
+                ],
+                true,
+            ],
+            'playlist ie_key' => [['ie_key' => 'YoutubeTab', 'id' => 'PL1', 'title' => 'Mix'], true],
+            'plain soundcloud track' => [
+                [
+                    '_type' => 'url',
+                    'ie_key' => 'Soundcloud',
+                    'id' => '123',
+                    'title' => 'Track',
+                    'url' => 'https://soundcloud.com/dj/track-one',
+                ],
+                false,
+            ],
+            'entry without url' => [['id' => '123', 'title' => 'Track'], false],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string, string}>
+     */
+    public static function normalizeCodecProvider(): array
+    {
+        return [
+            'null' => [null, 'unknown'],
+            'empty' => ['', 'unknown'],
+            'none' => ['none', 'unknown'],
+            'mp4a profile' => ['mp4a.40.2', 'aac'],
+            'aac uppercase' => ['AAC', 'aac'],
+            'mp3' => ['mp3', 'mp3'],
+            'mp3float (ffprobe)' => ['mp3float', 'mp3'],
+            'mpga' => ['mpga', 'mp3'],
+            'opus' => ['opus', 'opus'],
+            'vorbis' => ['vorbis', 'vorbis'],
+            'flac' => ['flac', 'lossless'],
+            'alac' => ['alac', 'lossless'],
+            'pcm' => ['pcm_s16le', 'lossless'],
+            'unknown' => ['weird-codec', 'unknown'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string}>
+     */
+    public static function parseFormatsAnswerInvalidProvider(): array
+    {
+        return [
+            'empty' => [''],
+            'null' => [null],
+            'only commas' => [',,'],
+            'unknown format' => ['mp3,ogg'],
+            'typo' => ['orig'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string, string}>
+     */
+    public static function parseFormatsAnswerProvider(): array
+    {
+        return [
+            'all four' => ['original,mp3,wav,flac', 'original,mp3,wav,flac'],
+            'single' => ['mp3', 'mp3'],
+            'spaces around entries' => [' mp3 , wav ', 'mp3,wav'],
+            'dedups repeats' => ['mp3,mp3,wav', 'mp3,wav'],
+            'trailing comma' => ['mp3,wav,', 'mp3,wav'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function parseMinOdgAnswerInvalidProvider(): array
+    {
+        return [
+            'letters' => ['abc'],
+            'positive kbps-style value' => ['128'],
+            'positive small' => ['5'],
+            'below scale' => ['-4.5'],
+            'trailing junk' => ['-1x'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{?string, ?float}>
+     */
+    public static function parseMinOdgAnswerProvider(): array
+    {
+        return [
+            'empty = off' => ['', null],
+            'null = off' => [null, null],
+            'dash = off' => ['-', null],
+            'off keyword' => ['off', null],
+            'off keyword uppercase' => ['OFF', null],
+            'tier 1 pro' => ['1', -0.2],
+            'tier 2 semi-pro' => ['2', -1.0],
+            'tier 3 preview' => ['3', -2.0],
+            'tier 4 off' => ['4', null],
+            'custom odg' => ['-1.5', -1.5],
+            'custom odg with spaces' => ['  -0.5  ', -0.5],
+            'unicode minus' => ['−1.5', -1.5],
+            'zero = lossless only' => ['0', 0.0],
+            'lower bound' => ['-4', -4.0],
+        ];
+    }
+
+    /**
+     * @return array<string, array{list<array<string, mixed>>, string, array{string, string, string, list<array{id: string, title: string}>, list<array{id: string, title: string}>}}>
      */
     public static function parseSpotdlSaveDataProvider(): array
     {
@@ -118,22 +333,23 @@ final class PlaylistsSyncCommandTest extends TestCase
                     'pl99',
                     'Spotify',
                     [['id' => 'sp123', 'title' => 'Spot Track'], ['id' => 'sp456', 'title' => 'Other Track']],
+                    [],
                 ],
             ],
             'single track falls back to track name' => [
                 [array_merge($songs[0], ['list_name' => null, 'list_url' => null])],
                 'https://open.spotify.com/track/sp123',
-                ['Spot Track', 'sp123', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']]],
+                ['Spot Track', 'sp123', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']], []],
             ],
             'missing song_id falls back to url tail' => [
                 [array_merge($songs[0], ['song_id' => null])],
                 $playlistUrl,
-                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']]],
+                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']], []],
             ],
             'song without id or url is skipped' => [
                 [array_merge($songs[0], ['song_id' => null, 'url' => null]), $songs[1]],
                 $playlistUrl,
-                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp456', 'title' => 'Other Track']]],
+                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp456', 'title' => 'Other Track']], []],
             ],
         ];
     }
@@ -197,6 +413,41 @@ final class PlaylistsSyncCommandTest extends TestCase
         ];
     }
 
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function titleFromFilenameProvider(): array
+    {
+        return [
+            'id - title' => ['/lib/original/123 - Track One.opus', '123', 'Track One'],
+            'title with dashes' => ['/lib/original/123 - A - B.mp3', '123', 'A - B'],
+            'id with regex chars' => ['/lib/original/a.b+c - Track.m4a', 'a.b+c', 'Track'],
+            'no id prefix keeps basename' => ['/lib/original/Track Only.wav', '999', 'Track Only'],
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $info
+     */
+    #[DataProvider('audioBitrateKbpsProvider')]
+    public function testAudioBitrateKbps(array $info, ?float $expected): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'audioBitrateKbps');
+
+        self::assertSame($expected, $method->invoke(null, $info));
+    }
+
+    /**
+     * @param array<string, mixed> $info
+     */
+    #[DataProvider('audioCodecProvider')]
+    public function testAudioCodec(array $info, ?string $expected): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'audioCodec');
+
+        self::assertSame($expected, $method->invoke(null, $info));
+    }
+
     public function testBuildFfmpegArgsFlacWithCover(): void
     {
         $args = self::buildFfmpegArgs('flac', cover: '/cover.jpg');
@@ -217,6 +468,8 @@ final class PlaylistsSyncCommandTest extends TestCase
         ?string $cover = null,
         ?int $rate = null,
         string $mp3Quality = '0',
+        string $mp3Mode = 'vbr',
+        string $mp3Bitrate = '320',
     ): array {
         $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'buildFfmpegArgs');
 
@@ -224,7 +477,9 @@ final class PlaylistsSyncCommandTest extends TestCase
         $args = $method->invoke(
             null,
             'ffmpeg',
+            $mp3Mode,
             $mp3Quality,
+            $mp3Bitrate,
             '/src.wav',
             '/out.'.$format,
             $format,
@@ -247,6 +502,15 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertNotContains('/cover.jpg', $args);
         self::assertSame(['-map', '0:a:0', '-c:a', 'pcm_s16le'], array_slice($args, 8, 4));
         self::assertSame(['-ar', '96000', '/out.wav'], array_slice($args, -3));
+    }
+
+    public function testBuildFfmpegArgsMp3CbrUsesBitrateFlag(): void
+    {
+        $args = self::buildFfmpegArgs('mp3', cover: null, mp3Mode: 'cbr', mp3Bitrate: '256');
+
+        self::assertNotContains('-q:a', $args);
+        self::assertSame(['-map', '0:a:0', '-c:a', 'libmp3lame', '-b:a', '256k', '-id3v2_version', '3'],
+            array_slice($args, 8, 8));
     }
 
     public function testBuildFfmpegArgsMp3WithCoverAndMetadata(): void
@@ -315,6 +579,47 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertNotContains('-ar', $args);
         self::assertNotContains('title=', $args);
         self::assertContains('artist=A', $args);
+    }
+
+    public function testBuildFormatSelectorInvertsThresholdPerCodec(): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'buildFormatSelector');
+
+        self::assertSame(
+            'bestaudio[acodec^=flac]/bestaudio[acodec^=alac]/bestaudio[acodec^=pcm]'
+            .'/bestaudio[acodec^=opus][abr>=96]/bestaudio[acodec^=mp4a][abr>=128]/bestaudio[acodec^=aac][abr>=128]'
+            .'/bestaudio[acodec^=vorbis][abr>=118.9]/bestaudio[acodec^=mp3][abr>=192]'
+            .'/bestaudio[acodec^=opus][tbr>=96]/bestaudio[acodec^=mp4a][tbr>=128]/bestaudio[acodec^=aac][tbr>=128]'
+            .'/bestaudio[acodec^=vorbis][tbr>=118.9]/bestaudio[acodec^=mp3][tbr>=192]'
+            .'/best[acodec^=flac]/best[acodec^=alac]/best[acodec^=pcm]'
+            .'/best[acodec^=opus][abr>=96]/best[acodec^=mp4a][abr>=128]/best[acodec^=aac][abr>=128]'
+            .'/best[acodec^=vorbis][abr>=118.9]/best[acodec^=mp3][abr>=192]'
+            .'/best[acodec^=opus][tbr>=96]/best[acodec^=mp4a][tbr>=128]/best[acodec^=aac][tbr>=128]'
+            .'/best[acodec^=vorbis][tbr>=118.9]/best[acodec^=mp3][tbr>=192]',
+            $method->invoke(null, -1.0)
+        );
+    }
+
+    public function testBuildFormatSelectorNoThreshold(): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'buildFormatSelector');
+
+        self::assertSame('bestaudio/best', $method->invoke(null, null));
+    }
+
+    public function testBuildFormatSelectorOmitsCodecsThatCannotReachThreshold(): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'buildFormatSelector');
+
+        /** @var string $selector */
+        $selector = $method->invoke(null, -0.1);
+
+        // mp3 (top anchor -0.2) and vorbis (-0.15) cannot reach -0.1 at any bitrate → fail-closed omission
+        self::assertStringNotContainsString('mp3', $selector);
+        self::assertStringNotContainsString('vorbis', $selector);
+        self::assertStringContainsString('bestaudio[acodec^=opus][abr>=', $selector);
+        self::assertStringContainsString('bestaudio[acodec^=mp4a][abr>=', $selector);
+        self::assertStringContainsString('bestaudio[acodec^=flac]', $selector);
     }
 
     public function testBuildSpotdlDownloadCmd(): void
@@ -411,6 +716,8 @@ final class PlaylistsSyncCommandTest extends TestCase
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'ffprobeBin'))->setValue($command, 'ffprobe');
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'ffmpegBin'))->setValue($command, 'ffmpeg');
         (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Quality'))->setValue($command, '0');
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Mode'))->setValue($command, 'cbr');
+        (new ReflectionProperty(PlaylistsSyncCommand::class, 'mp3Bitrate'))->setValue($command, '320');
 
         return [$command, $fake];
     }
@@ -461,6 +768,12 @@ final class PlaylistsSyncCommandTest extends TestCase
         }
     }
 
+    #[DataProvider('estimateOdgProvider')]
+    public function testEstimateOdg(?string $acodec, float $kbps, float $expected): void
+    {
+        self::assertEqualsWithDelta($expected, PlaylistsSyncCommand::estimateOdg($acodec, $kbps), 0.0001);
+    }
+
     public function testGetSpotifyPlaylistInfoFailureThrows(): void
     {
         [$command, $fake] = self::makeCommand();
@@ -507,7 +820,7 @@ final class PlaylistsSyncCommandTest extends TestCase
             $result = $method->invoke($command, $url, $archiveDir);
 
             self::assertSame(
-                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']]],
+                ['My Spotify List', 'pl99', 'Spotify', [['id' => 'sp123', 'title' => 'Spot Track']], []],
                 $result
             );
             self::assertTrue($fake->ran("'save'"));
@@ -516,6 +829,17 @@ final class PlaylistsSyncCommandTest extends TestCase
             @unlink($saveFile);
             @rmdir($archiveDir);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    #[DataProvider('nestedPlaylistEntryProvider')]
+    public function testIsNestedPlaylistEntry(array $entry, bool $expected): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'isNestedPlaylistEntry');
+
+        self::assertSame($expected, $method->invoke(null, $entry));
     }
 
     public function testLoadArchiveIdsMissingFileIsEmpty(): void
@@ -573,6 +897,97 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertSame($expected, $method->invoke(null, $json));
     }
 
+    #[DataProvider('formatUnavailableLineProvider')]
+    public function testMatchFormatUnavailableId(string $line, ?string $expected): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'matchFormatUnavailableId');
+
+        self::assertSame($expected, $method->invoke(null, $line));
+    }
+
+    #[DataProvider('minKbpsForOdgProvider')]
+    public function testMinKbpsForOdg(string $codec, float $minOdg, ?float $expected): void
+    {
+        $actual = PlaylistsSyncCommand::minKbpsForOdg($codec, $minOdg);
+        if ($expected === null) {
+            self::assertNull($actual);
+        } else {
+            self::assertNotNull($actual);
+            self::assertEqualsWithDelta($expected, $actual, 0.10001);
+        }
+    }
+
+    public function testMinKbpsForOdgRoundtripNeverAdmitsWorseQuality(): void
+    {
+        foreach (['mp3', 'aac', 'opus', 'vorbis'] as $codec) {
+            foreach ([-0.5, -1.0, -1.5, -2.0, -3.0] as $threshold) {
+                $kbps = PlaylistsSyncCommand::minKbpsForOdg($codec, $threshold);
+                if ($kbps === null) {
+                    continue;
+                }
+                self::assertGreaterThanOrEqual(
+                    $threshold - 1e-9,
+                    PlaylistsSyncCommand::estimateOdg($codec, $kbps),
+                    "$codec @ $threshold: minKbpsForOdg result must satisfy the threshold"
+                );
+            }
+        }
+    }
+
+    #[DataProvider('normalizeCodecProvider')]
+    public function testNormalizeCodec(?string $acodec, string $expected): void
+    {
+        self::assertSame($expected, PlaylistsSyncCommand::normalizeCodec($acodec));
+    }
+
+    public function testOdgCalibrationIsMonotonic(): void
+    {
+        /** @var array<string, list<array{0: float|int, 1: float}>> $table */
+        $table = (new ReflectionClassConstant(PlaylistsSyncCommand::class, 'ODG_CALIBRATION'))->getValue();
+
+        self::assertNotSame([], $table);
+        foreach ($table as $codec => $anchors) {
+            for ($i = 1, $n = count($anchors); $i < $n; $i++) {
+                self::assertGreaterThan(
+                    $anchors[$i - 1][0],
+                    $anchors[$i][0],
+                    "$codec: kbps anchors must be strictly increasing"
+                );
+                self::assertGreaterThanOrEqual(
+                    $anchors[$i - 1][1],
+                    $anchors[$i][1],
+                    "$codec: ODG anchors must be non-decreasing"
+                );
+            }
+        }
+    }
+
+    #[DataProvider('parseFormatsAnswerProvider')]
+    public function testParseFormatsAnswer(?string $answer, string $expected): void
+    {
+        self::assertSame($expected, PlaylistsSyncCommand::parseFormatsAnswer($answer));
+    }
+
+    #[DataProvider('parseFormatsAnswerInvalidProvider')]
+    public function testParseFormatsAnswerInvalidThrows(?string $answer): void
+    {
+        $this->expectException(RuntimeException::class);
+        PlaylistsSyncCommand::parseFormatsAnswer($answer);
+    }
+
+    #[DataProvider('parseMinOdgAnswerProvider')]
+    public function testParseMinOdgAnswer(?string $answer, ?float $expected): void
+    {
+        self::assertSame($expected, PlaylistsSyncCommand::parseMinOdgAnswer($answer));
+    }
+
+    #[DataProvider('parseMinOdgAnswerInvalidProvider')]
+    public function testParseMinOdgAnswerInvalidThrows(string $answer): void
+    {
+        $this->expectException(RuntimeException::class);
+        PlaylistsSyncCommand::parseMinOdgAnswer($answer);
+    }
+
     /**
      * @param list<array<string, mixed>> $songs
      * @param array{string, string, string, list<array{id: string, title: string}>} $expected
@@ -592,6 +1007,54 @@ final class PlaylistsSyncCommandTest extends TestCase
         $this->expectException(RuntimeException::class);
         $this->expectExceptionMessageMatches('/Failed to query Spotify playlist info/');
         $method->invoke(null, [], 'https://open.spotify.com/playlist/pl99');
+    }
+
+    public function testProbeAudioPropertiesCodecOnlyWhenBitrateUnknown(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('bit_rate', 0, "codec_name=opus\nbit_rate=N/A\n");
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'probeAudioProperties');
+
+        self::assertSame([null, 'opus'], $method->invoke($command, __FILE__));
+    }
+
+    public function testProbeAudioPropertiesFallsBackToFormatBitrate(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        // stream reports N/A (e.g. some containers) → format line is used
+        $fake->on('bit_rate', 0, "codec_name=vorbis\nbit_rate=N/A\nbit_rate=320000\n");
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'probeAudioProperties');
+
+        self::assertSame([320.0, 'vorbis'], $method->invoke($command, __FILE__));
+    }
+
+    public function testProbeAudioPropertiesFfprobeFailureIsNull(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('bit_rate', 1, '');
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'probeAudioProperties');
+
+        self::assertSame([null, null], $method->invoke($command, __FILE__));
+    }
+
+    public function testProbeAudioPropertiesMissingFileSkipsProbe(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'probeAudioProperties');
+
+        self::assertSame([null, null], $method->invoke($command, '/nonexistent/file.m4a'));
+        self::assertSame([], $fake->commands);
+    }
+
+    public function testProbeAudioPropertiesParsesStreamBitrateAndCodec(): void
+    {
+        [$command, $fake] = self::makeCommand();
+        $fake->on('bit_rate', 0, "codec_name=mp3\nbit_rate=128000\n");
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'probeAudioProperties');
+
+        self::assertSame([128.0, 'mp3'], $method->invoke($command, __FILE__));
+        self::assertStringContainsString('stream=codec_name,bit_rate:format=bit_rate', $fake->commands[0]);
+        self::assertStringContainsString(escapeshellarg(__FILE__), $fake->commands[0]);
     }
 
     public function testProbeSampleRateFfprobeFailureIsNull(): void
@@ -702,5 +1165,13 @@ final class PlaylistsSyncCommandTest extends TestCase
     public function testTargetSampleRate(int $src, ?int $expected): void
     {
         self::assertSame($expected, PlaylistsSyncCommand::targetSampleRate($src));
+    }
+
+    #[DataProvider('titleFromFilenameProvider')]
+    public function testTitleFromFilename(string $srcPath, string $id, string $expected): void
+    {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'titleFromFilename');
+
+        self::assertSame($expected, $method->invoke(null, $srcPath, $id));
     }
 }

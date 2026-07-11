@@ -24,6 +24,7 @@ use Throwable;
 class UsbSetupCommand extends BaseCommand
 {
     /** Windows/desktop-trash/vfat-fsck artifacts never worth mirroring between sticks. */
+    private const ISO_VARIANTS = ['standard', 'gnome', 'kde', 'cinnamon', 'lxde', 'lxqt', 'mate', 'xfce'];
     private const RSYNC_EXCLUDES = ['System Volume Information', '.Trash-*', '.Trashes', 'FOUND.[0-9][0-9][0-9]'];
 
     private SymfonyStyle $io;
@@ -82,6 +83,25 @@ class UsbSetupCommand extends BaseCommand
                 InputOption::VALUE_REQUIRED,
                 'Path to file listing software URLs and/or local file/directory paths to copy onto the stick '.
                 '(magnet:/urn:btmh: reserved for future torrent support)'
+            )
+            ->addOption(
+                'cache-dir',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Directory for cached ISO/software downloads (default: downloads/.cache)'
+            )
+            ->addOption(
+                'install-ventoy',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Install/update Ventoy: "yes" or "no" (skips the Ventoy prompt)'
+            )
+            ->addOption(
+                'iso-variant',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Debian live ISO variant to download (standard, gnome, kde, cinnamon, lxde, lxqt, mate, xfce) — '.
+                'implies ISO source "download" and skips the ISO prompts'
             );
     }
 
@@ -95,34 +115,61 @@ class UsbSetupCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        $device = $input->getOption('device') !== null ? rtrim((string)$input->getOption('device'), '/') : null;
-        $debianIso = $input->getOption('debian-iso') !== null ? (string)$input->getOption('debian-iso') : null;
-        $persistenceMib = $input->getOption('persistence-size') !== null ? (int)$input->getOption(
-            'persistence-size'
-        ) : 2048;
+        $this->loadDotenv();
+
+        // USB_* env vars act like their CLI option: they suppress the prompt. They deliberately
+        // skip the config layer (empty config array) — config keys only pre-fill prompt defaults,
+        // so a saved `device` etc. never silently bypasses the per-run prompts.
+        $deviceParam = $this->resolveParam($input->getOption('device'), 'USB_DEVICE', [], '');
+        $device = $deviceParam !== null ? rtrim($deviceParam, '/') : null;
+        $debianIso = $this->resolveParam($input->getOption('debian-iso'), 'USB_DEBIAN_ISO', [], '');
+        $persistenceParam = $this->resolveParam($input->getOption('persistence-size'), 'USB_PERSISTENCE_SIZE', [], '');
+        $persistenceMib = $persistenceParam !== null ? (int)$persistenceParam : 2048;
         $ventoyBinHint = $input->getOption('ventoy-bin') !== null ? (string)$input->getOption('ventoy-bin') : null;
-        $downloadsFile = $input->getOption('downloads-file') !== null ? (string)$input->getOption(
-            'downloads-file'
-        ) : null;
-        $sourceDevice = $input->getOption('source-device') !== null
-            ? rtrim((string)$input->getOption('source-device'), '/')
-            : null;
-        $skipConfirm = (bool)$input->getOption('yes') || !$input->isInteractive();
-        $isUpdate = (bool)$input->getOption('update');
+        $downloadsFile = $this->resolveParam($input->getOption('downloads-file'), 'USB_DOWNLOADS_FILE', [], '');
+        $sourceDeviceParam = $this->resolveParam($input->getOption('source-device'), 'USB_SOURCE_DEVICE', [], '');
+        $sourceDevice = $sourceDeviceParam !== null ? rtrim($sourceDeviceParam, '/') : null;
+        $yesEnv = getenv('USB_YES') ?: null;
+        $skipConfirm = (bool)$input->getOption('yes') || self::parseBoolLike($yesEnv) || !$input->isInteractive();
+        $updateParam = $this->resolveParam($input->getOption('update') ? '1' : null, 'USB_UPDATE', [], '');
+        $isUpdate = self::parseBoolLike($updateParam);
         $isDuplicate = $sourceDevice !== null;
-        $persistenceExplicit = $input->getOption('persistence-size') !== null;
-        $installVentoy = true;
+        $persistenceExplicit = $persistenceParam !== null;
+        $installVentoyParam = $this->resolveParam($input->getOption('install-ventoy'), 'USB_INSTALL_VENTOY', [], '');
+        $installVentoy = $installVentoyParam === null || self::parseBoolLike($installVentoyParam);
+        $isoVariantParam = $this->resolveParam($input->getOption('iso-variant'), 'USB_ISO_VARIANT', [], '');
+        if ($isoVariantParam !== null && !in_array($isoVariantParam, self::ISO_VARIANTS, true)) {
+            $this->io->error(
+                "Invalid --iso-variant / USB_ISO_VARIANT value: $isoVariantParam (expected one of: "
+                .implode(', ', self::ISO_VARIANTS).')'
+            );
+
+            return Command::FAILURE;
+        }
 
         /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
 
         $config = $this->loadConfig();
-        $cacheDir = $config['cache_dir'] ?? dirname(__DIR__, 2).'/.cache';
+        // cache_dir is never prompted — full resolution chain including the config file
+        $cacheDir = $this->resolveParam(
+            $input->getOption('cache-dir'),
+            'USB_CACHE_DIR',
+            $config,
+            'cache_dir',
+            dirname(__DIR__, 2).'/downloads/.cache'
+        );
 
         $isoSrc = null;
         $variant = null;
         $deviceDesc = null;
         $sourceDeviceDesc = null;
+
+        // --iso-variant / USB_ISO_VARIANT implies ISO source "download" and skips the ISO prompts
+        if (!$isDuplicate && $debianIso === null && $isoVariantParam !== null) {
+            $isoSrc = 'download';
+            $variant = $isoVariantParam;
+        }
 
         if ($input->isInteractive()) {
             if ($device === null) {
@@ -171,36 +218,37 @@ class UsbSetupCommand extends BaseCommand
                 $lines[] = '';
                 $lines[] = 'Run those commands on the HOST (not inside ddev), then re-run this command.';
                 $this->io->warning($lines);
-                $q = new ConfirmationQuestion('Continue anyway? [yes/NO] ', false, '/^yes$/i');
-                if (!$helper->ask($input, $output, $q)) {
+                if (!$this->askConfirmation(
+                    $input,
+                    $output,
+                    'Continue anyway? [yes/NO] ',
+                    false,
+                    false,
+                    true,
+                    '/^yes$/i'
+                )) {
                     $this->io->note('Aborted.');
 
                     return Command::SUCCESS;
                 }
             }
 
-            // Mode: update existing setup or redo from scratch
-            if (!$input->getOption('update')) {
+            // Mode: update existing setup or redo from scratch (--update / USB_UPDATE skip the prompt)
+            if ($updateParam === null) {
                 $modeLabels = ['update existing setup', 'redo from scratch'];
                 $ventoyDetected = $this->hasVentoyPartition($device);
                 $modeDefault = $ventoyDetected ? 0 : 1;
-                $q = new ChoiceQuestion(
-                    '<question>Mode:</question> [<info>'.$modeLabels[$modeDefault].'</info>]',
-                    $modeLabels,
-                    $modeDefault
-                );
-                $isUpdate = $helper->ask($input, $output, $q) === 'update existing setup';
+                $isUpdate = $this->askChoice($input, $output, 'Mode', $modeLabels, $modeDefault)
+                    === 'update existing setup';
             }
 
-            // Ventoy install/update (optional)
-            $ventoyLabels = ['install/update Ventoy', 'skip Ventoy'];
-            $ventoyDefault = ($config['install_ventoy'] ?? true) ? 0 : 1;
-            $q = new ChoiceQuestion(
-                '<question>Ventoy:</question> [<info>'.$ventoyLabels[$ventoyDefault].'</info>]',
-                $ventoyLabels,
-                $ventoyDefault
-            );
-            $installVentoy = $helper->ask($input, $output, $q) === 'install/update Ventoy';
+            // Ventoy install/update (optional; --install-ventoy / USB_INSTALL_VENTOY skip the prompt)
+            if ($installVentoyParam === null) {
+                $ventoyLabels = ['install/update Ventoy', 'skip Ventoy'];
+                $ventoyDefault = ($config['install_ventoy'] ?? true) ? 0 : 1;
+                $installVentoy = $this->askChoice($input, $output, 'Ventoy', $ventoyLabels, $ventoyDefault)
+                    === 'install/update Ventoy';
+            }
 
             // Payload: built from configuration (download/local files) or duplicated from an existing stick
             if ($sourceDevice === null) {
@@ -209,12 +257,13 @@ class UsbSetupCommand extends BaseCommand
                     'duplicate from an existing Ventoy stick',
                 ];
                 $payloadDefault = ($config['payload_source'] ?? 'configuration') === 'duplicate' ? 1 : 0;
-                $q = new ChoiceQuestion(
-                    '<question>Payload:</question> [<info>'.$payloadLabels[$payloadDefault].'</info>]',
-                    $payloadLabels,
-                    $payloadDefault
-                );
-                if ($helper->ask($input, $output, $q) === $payloadLabels[1]) {
+                if ($this->askChoice(
+                        $input,
+                        $output,
+                        'Payload',
+                        $payloadLabels,
+                        $payloadDefault
+                    ) === $payloadLabels[1]) {
                     $sourceDevice = $this->promptForDevice(
                         $input,
                         $output,
@@ -232,6 +281,9 @@ class UsbSetupCommand extends BaseCommand
             }
             $isDuplicate = $sourceDevice !== null;
             if ($isDuplicate) {
+                // duplicate mode mirrors the source stick — a pre-set ISO download does not apply
+                $isoSrc = null;
+                $variant = null;
                 $res = $this->validateSourceDevice(
                     $input,
                     $output,
@@ -247,33 +299,28 @@ class UsbSetupCommand extends BaseCommand
                 $sourceDeviceDesc = $res;
             }
 
-            if (!$isDuplicate && $debianIso === null) {
+            if (!$isDuplicate && $debianIso === null && $isoSrc === null) {
                 $savedIsoSrc = $config['iso_source'] ?? 'download';
-                $q = new ChoiceQuestion(
-                    "<question>Debian ISO:</question> [<info>$savedIsoSrc</info>] <comment>(downloads are cached in .cache/)</comment>",
+                $isoSrc = $this->askChoice(
+                    $input,
+                    $output,
+                    'Debian ISO',
                     ['download', 'local path', 'skip'],
-                    $savedIsoSrc
+                    $savedIsoSrc,
+                    ' <comment>(downloads are cached in downloads/.cache/)</comment>'
                 );
-                $isoSrc = $helper->ask($input, $output, $q);
 
                 if ($isoSrc === 'download') {
-                    $variants = ['standard', 'gnome', 'kde', 'cinnamon', 'lxde', 'lxqt', 'mate', 'xfce'];
-                    $savedVariant = $config['iso_variant'] ?? 'standard';
-                    $variantDefault = array_search($savedVariant, $variants, true);
-                    $variantDefault = $variantDefault !== false ? $variantDefault : 0;
-                    $q = new ChoiceQuestion(
-                        "<question>Variant:</question> [<info>$savedVariant</info>]",
-                        $variants,
-                        $variantDefault
+                    $variant = $this->askChoice(
+                        $input,
+                        $output,
+                        'Variant',
+                        self::ISO_VARIANTS,
+                        $config['iso_variant'] ?? 'standard'
                     );
-                    $variant = (string)$helper->ask($input, $output, $q);
                 } elseif ($isoSrc === 'local path') {
                     $savedPath = $config['iso_path'] ?? null;
-                    $q = new Question(
-                        '<question>Path to Debian ISO:</question>'.($savedPath ? " [<info>$savedPath</info>]" : '').' ',
-                        $savedPath
-                    );
-                    $ans = $helper->ask($input, $output, $q);
+                    $ans = $this->askText($input, $output, '<question>Path to Debian ISO</question>', $savedPath);
                     $debianIso = ($ans !== null && trim($ans) !== '') ? trim($ans) : null;
                     if ($debianIso !== null && !is_file($debianIso)) {
                         $this->io->error("ISO file not found: $debianIso");
@@ -283,54 +330,67 @@ class UsbSetupCommand extends BaseCommand
                 }
             }
             $wantIso = $debianIso !== null || $isoSrc === 'download';
-            if ($wantIso && $input->getOption('persistence-size') === null) {
+            if ($wantIso && !$persistenceExplicit) {
                 $persistDefault = (string)min((int)($config['persistence_mib'] ?? 2048), 4090);
-                $q = new Question(
-                    "<question>Persistence size in MiB</question> (max 4090 on FAT32) [<info>$persistDefault</info>]: ",
-                    $persistDefault
-                );
-                $q->setValidator(static function (?string $v) {
-                    $n = (int)($v ?? '');
-                    if ($n <= 0) {
-                        throw new RuntimeException('Must be a positive integer.');
-                    }
-                    if ($n > 4090) {
-                        throw new RuntimeException(
-                            "FAT32 limits single files to ~4 GiB — maximum is 4090 MiB (got $n)."
-                        );
-                    }
+                $ans = $this->askText(
+                    $input,
+                    $output,
+                    '<question>Persistence size in MiB</question> (max 4090 on FAT32)',
+                    $persistDefault,
+                    static function (?string $v) {
+                        $n = (int)($v ?? '');
+                        if ($n <= 0) {
+                            throw new RuntimeException('Must be a positive integer.');
+                        }
+                        if ($n > 4090) {
+                            throw new RuntimeException(
+                                "FAT32 limits single files to ~4 GiB — maximum is 4090 MiB (got $n)."
+                            );
+                        }
 
-                    return (string)$n;
-                });
-                $ans = $helper->ask($input, $output, $q);
+                        return (string)$n;
+                    }
+                );
                 $persistenceMib = (int)($ans ?? $persistDefault);
             }
 
-            // Downloads file: only asked on the first run — a saved answer (including '-' for
-            // "none") is reused silently; --downloads-file or a config edit changes it later.
-            // Duplicate mode never prompts: downloads apply only via an explicit --downloads-file.
+            // Downloads: --downloads-file bypasses the prompt; duplicate mode never prompts.
+            // The first run asks free-text to establish a path; later runs get a ChoiceQuestion
+            // whose default mirrors the saved answer ('-' or '' = skip). The answer is persisted
+            // as the next run's default.
             if ($downloadsFile === null && !$isDuplicate) {
+                $savedPath = null;
+                $askPath = true;
                 if (array_key_exists('download_sources', $config)) {
                     $saved = trim((string)$config['download_sources']);
-                    if ($saved === '' || $saved === '-') {
-                        $this->io->text(
-                            'Software downloads disabled in config (pass --downloads-file or edit '.
-                            'download_sources to change).'
-                        );
-                    } else {
-                        $downloadsFile = $saved;
-                        $this->io->text(
-                            "Using downloads file $saved from config (pass --downloads-file or edit ".
-                            'download_sources to change).'
-                        );
-                    }
-                } else {
-                    $savedDownloads = 'config/usb-downloads.txt';
-                    $q = new Question(
-                        "<question>Software downloads file</question> (http(s) URLs copied to /software/ on the stick; '-' to skip) [<info>$savedDownloads</info>]: ",
-                        $savedDownloads
+                    $savedPath = ($saved === '' || $saved === '-') ? null : $saved;
+                    $downloadLabels = $savedPath !== null
+                        ? ["copy software from $savedPath", 'use a different downloads file', 'skip software downloads']
+                        : ['skip software downloads', 'copy software from a downloads file'];
+                    $q = new ChoiceQuestion(
+                        '<question>Software downloads:</question> [<info>'.$downloadLabels[0].'</info>]',
+                        $downloadLabels,
+                        0
                     );
-                    $ans = $helper->ask($input, $output, $q);
+                    $choice = (string)$helper->ask($input, $output, $q);
+                    if ($savedPath !== null && $choice === $downloadLabels[0]) {
+                        $downloadsFile = $savedPath;
+                        $askPath = false;
+                    } elseif (str_starts_with($choice, 'skip')) {
+                        $downloadsFile = null;
+                        $askPath = false;
+                    }
+                    // else: fall through to the free-text question below
+                }
+
+                if ($askPath) {
+                    $downloadsDefault = $savedPath ?? 'config/usb-downloads.txt';
+                    $ans = $this->askText(
+                        $input,
+                        $output,
+                        "<question>Software downloads file</question> (http(s) URLs copied to /software/ on the stick; '-' to skip)",
+                        $downloadsDefault
+                    );
                     $ans = $ans !== null ? trim($ans) : '';
                     $downloadsFile = ($ans === '' || $ans === '-') ? null : $ans;
                 }
@@ -362,20 +422,21 @@ class UsbSetupCommand extends BaseCommand
                 $updates['source_device'] = $sourceDevice;
             }
             $this->saveConfig(array_merge($this->loadConfig(), $updates));
-
-            if ($isoSrc === 'download' && $variant !== null) {
-                try {
-                    $debianIso = $this->downloadDebianIso($variant, $output, $cacheDir);
-                } catch (RuntimeException $e) {
-                    $this->io->error($e->getMessage());
-
-                    return Command::FAILURE;
-                }
-            }
         } elseif ($device === null) {
             $this->io->error('--device is required in non-interactive mode.');
 
             return Command::FAILURE;
+        }
+
+        // runs in both interactive and non-interactive mode (--iso-variant / USB_ISO_VARIANT)
+        if ($isoSrc === 'download' && $variant !== null) {
+            try {
+                $debianIso = $this->downloadDebianIso($variant, $output, $cacheDir);
+            } catch (RuntimeException $e) {
+                $this->io->error($e->getMessage());
+
+                return Command::FAILURE;
+            }
         }
 
         if (!file_exists($device)) {
@@ -506,13 +567,18 @@ class UsbSetupCommand extends BaseCommand
                         $oversizedFiles
                     )
                 );
-                if (!$skipConfirm) {
-                    $q = new ConfirmationQuestion('Continue without these files? [yes/NO] ', false, '/^yes$/i');
-                    if (!$helper->ask($input, $output, $q)) {
-                        $this->io->note('Aborted.');
+                if (!$this->askConfirmation(
+                    $input,
+                    $output,
+                    'Continue without these files? [yes/NO] ',
+                    false,
+                    $skipConfirm,
+                    true,
+                    '/^yes$/i'
+                )) {
+                    $this->io->note('Aborted.');
 
-                        return Command::SUCCESS;
-                    }
+                    return Command::SUCCESS;
                 }
             }
         }
@@ -521,13 +587,22 @@ class UsbSetupCommand extends BaseCommand
         // actual stick state, not the chosen mode.
         $ventoyOnStick = $this->hasVentoyPartition($device);
         $ventoyUpdate = $isUpdate && $ventoyOnStick;
+        // Ventoy stays bootable when the install is skipped on a stick that already has it;
+        // only a stick without Ventoy anywhere gets a neutral data-partition label.
+        $ventoyActive = $installVentoy || $ventoyOnStick;
+        $dataLabel = $ventoyActive ? 'VENTOY' : 'USBDATA';
 
         $this->io->section($isUpdate ? 'USB Setup — Update Summary' : 'USB Setup — Summary');
         $rows = [
             ['Device', $deviceDesc],
             ['Mode', $isUpdate ? 'update (skip completed steps)' : 'redo from scratch'],
-            ['Partition table', 'MBR'],
-            ['Data partition', 'FAT32 (label: VENTOY)'],
+            ['Partition table', $installVentoy ? 'MBR' : 'existing (Ventoy skipped)'],
+            [
+                'Data partition',
+                $isUpdate
+                    ? 'FAT32 if already — reformat offered otherwise'
+                    : "FAT32 (label: $dataLabel)",
+            ],
             ['Ventoy binary', $ventoyBin],
         ];
         if ($isDuplicate) {
@@ -555,33 +630,38 @@ class UsbSetupCommand extends BaseCommand
             } else {
                 $this->io->note("Updating $deviceDesc — data partition is preserved.");
             }
-            if (!$skipConfirm) {
-                $q = new ConfirmationQuestion('Proceed with update? [YES/no] ', true);
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
+            if (!$this->askConfirmation($input, $output, 'Proceed with update? [YES/no] ', true, $skipConfirm)) {
+                $this->io->note('Aborted.');
 
-                    return Command::SUCCESS;
-                }
+                return Command::SUCCESS;
             }
         } else {
             $this->io->warning("ALL DATA ON {$device} WILL BE ERASED.");
-            if (!$skipConfirm) {
-                $q = new ConfirmationQuestion(
-                    'Are you absolutely sure you want to proceed? [yes/NO] ',
-                    false,
-                    '/^yes$/i'
-                );
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
+            if (!$this->askConfirmation(
+                $input,
+                $output,
+                'Are you absolutely sure you want to proceed? [yes/NO] ',
+                false,
+                $skipConfirm,
+                true,
+                '/^yes$/i'
+            )) {
+                $this->io->note('Aborted.');
 
-                    return Command::SUCCESS;
-                }
-                $q = new ConfirmationQuestion("Second confirmation — wipe {$deviceDesc}? [yes/NO] ", false, '/^yes$/i');
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
+                return Command::SUCCESS;
+            }
+            if (!$this->askConfirmation(
+                $input,
+                $output,
+                "Second confirmation — wipe {$deviceDesc}? [yes/NO] ",
+                false,
+                $skipConfirm,
+                true,
+                '/^yes$/i'
+            )) {
+                $this->io->note('Aborted.');
 
-                    return Command::SUCCESS;
-                }
+                return Command::SUCCESS;
             }
         }
 
@@ -617,13 +697,18 @@ class UsbSetupCommand extends BaseCommand
                         $capacityBytes / 1073741824
                     )
                 );
-                if (!$skipConfirm) {
-                    $q = new ConfirmationQuestion('Continue anyway? [yes/NO] ', false, '/^yes$/i');
-                    if (!$helper->ask($input, $output, $q)) {
-                        $this->io->note('Aborted.');
+                if (!$this->askConfirmation(
+                    $input,
+                    $output,
+                    'Continue anyway? [yes/NO] ',
+                    false,
+                    $skipConfirm,
+                    true,
+                    '/^yes$/i'
+                )) {
+                    $this->io->note('Aborted.');
 
-                        return Command::SUCCESS;
-                    }
+                    return Command::SUCCESS;
                 }
             }
         }
@@ -640,22 +725,45 @@ class UsbSetupCommand extends BaseCommand
                 return Command::FAILURE;
             }
             $this->io->text($ventoyUpdate ? 'Ventoy updated.' : 'Ventoy installed (MBR).');
-
-            // Step 2: FAT32 (skip in update mode if already correct)
-            if ($isUpdate && $this->isFat32Ventoy($dataPartition)) {
-                $this->io->text('Partition 1 already FAT32 (VENTOY) — skipping reformat.');
-            } else {
-                try {
-                    $this->reformatFat32($dataPartition, $output);
-                } catch (Throwable $t) {
-                    $this->io->error($t->getMessage());
-
-                    return Command::FAILURE;
-                }
-                $this->io->text('Partition 1 formatted as FAT32.');
-            }
         } else {
             $this->io->text('Ventoy install skipped.');
+        }
+
+        // Step 2: FAT32 — scratch mode always reformats (the wipe was double-confirmed, even
+        // when Ventoy itself was skipped); update mode asks before erasing the data partition.
+        $doReformat = true;
+        if ($isUpdate && $this->isFat32Ventoy($dataPartition, $dataLabel)) {
+            $this->io->text("Partition 1 already FAT32 ($dataLabel) — skipping reformat.");
+            $doReformat = false;
+        } elseif ($isUpdate) {
+            $doReformat = $this->askConfirmation(
+                $input,
+                $output,
+                "Partition 1 is not FAT32 (label $dataLabel). Reformat it? ALL DATA on ".
+                "{$dataPartition} will be erased. [yes/NO] ",
+                false,
+                $skipConfirm,
+                true,
+                '/^yes$/i'
+            );
+            if (!$doReformat) {
+                $this->io->warning("$dataPartition left untouched (not FAT32).");
+            }
+        }
+        if ($doReformat) {
+            try {
+                $this->reformatFat32($dataPartition, $output, $dataLabel);
+            } catch (Throwable $t) {
+                $messages = [$t->getMessage()];
+                if (!$installVentoy) {
+                    $messages[] = "If $device has no partition table yet, rerun and choose ".
+                        "'install/update Ventoy' to create one.";
+                }
+                $this->io->error($messages);
+
+                return Command::FAILURE;
+            }
+            $this->io->text('Partition 1 formatted as FAT32.');
         }
 
         if ($debianIso !== null || $softwareFiles !== [] || $isDuplicate) {
@@ -770,7 +878,11 @@ class UsbSetupCommand extends BaseCommand
             );
         }
         if ($debianIso === null && $softwareFiles === [] && !$isDuplicate) {
-            $this->io->text("Copy ISO files onto $dataPartition (FAT32) to boot them with Ventoy.");
+            $this->io->text(
+                $ventoyActive
+                    ? "Copy ISO files onto $dataPartition (FAT32) to boot them with Ventoy."
+                    : "Copy files onto $dataPartition (FAT32) — no Ventoy on this stick, it is not bootable."
+            );
         }
 
         return Command::SUCCESS;
@@ -1137,15 +1249,15 @@ class UsbSetupCommand extends BaseCommand
         return $sourceDeviceDesc;
     }
 
-    private function isFat32Ventoy(string $partition): bool
+    private function isFat32Ventoy(string $partition, string $label = 'VENTOY'): bool
     {
         [$exit, $type] = $this->runCmd('blkid -o value -s TYPE '.escapeshellarg($partition).' 2>/dev/null');
         if ($exit !== 0 || strtolower(trim($type)) !== 'vfat') {
             return false;
         }
-        [$exit, $label] = $this->runCmd('blkid -o value -s LABEL '.escapeshellarg($partition).' 2>/dev/null');
+        [$exit, $actual] = $this->runCmd('blkid -o value -s LABEL '.escapeshellarg($partition).' 2>/dev/null');
 
-        return $exit === 0 && trim($label) === 'VENTOY';
+        return $exit === 0 && trim($actual) === $label;
     }
 
     private function downloadDebianIso(string $variant, OutputInterface $output, string $cacheDir): string
@@ -1640,7 +1752,7 @@ class UsbSetupCommand extends BaseCommand
             || str_contains($out, 'does not contain Ventoy');
     }
 
-    private function reformatFat32(string $partition, OutputInterface $output): void
+    private function reformatFat32(string $partition, OutputInterface $output, string $label = 'VENTOY'): void
     {
         $this->io->text("Reformatting $partition as FAT32...");
         $this->waitForPartition($partition);
@@ -1653,7 +1765,7 @@ class UsbSetupCommand extends BaseCommand
             $this->runCmd('umount -f '.$partArg.' 2>/dev/null');
             $this->runCmd('udevadm settle 2>/dev/null');
             [$exit] = $this->runCmd(
-                'mkfs.fat -F 32 -n VENTOY '.escapeshellarg($partition).' 2>&1',
+                'mkfs.fat -F 32 -n '.escapeshellarg($label).' '.escapeshellarg($partition).' 2>&1',
                 true,
                 $output
             );
@@ -1975,12 +2087,5 @@ class UsbSetupCommand extends BaseCommand
     protected function getConfigPath(): string
     {
         return dirname(__DIR__, 2).'/config/usb-setup.json';
-    }
-
-    private function listUsbDevices(OutputInterface $output): void
-    {
-        [, $out] = $this->runCmd('lsblk -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL,MOUNTPOINT -d 2>/dev/null');
-        $output->writeln('Detected block devices:');
-        $output->writeln($out);
     }
 }

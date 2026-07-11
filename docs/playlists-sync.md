@@ -24,8 +24,23 @@ first use:
 
 ```bash
 cp config/playlists.txt.example config/playlists.txt
-cp config/cookies.txt.example config/cookies.txt   # optional
+cp config/cookies.txt.example config/cookies.txt                   # optional
+cp config/playlists-sync.json.example config/playlists-sync.json   # optional
 ```
+
+### Parameter resolution
+
+Every parameter resolves through the same layers — first hit wins:
+
+1. **CLI option** (`--out downloads`)
+2. **Env var** — from the shell or `.env` (`DOTENV_PATH` overrides the `.env` location)
+3. **Config file** `config/playlists-sync.json`
+4. **Interactive prompt** — only for the parameters whose *Prompted when* column in [Parameters](#parameters) says
+   so; `-n`/`--no-interaction` skips all prompts
+5. **Built-in default**
+
+Only prompt answers are persisted to `config/playlists-sync.json` — CLI/env values are never written to it. Empty
+env or config values count as unset.
 
 ## ddev commands
 
@@ -39,7 +54,23 @@ ddev start
 
 ### Interactive run (default)
 
-Prompts for any missing values:
+Prompts for any missing values. Besides input file, output directory, and formats, two quality-threshold prompts
+can fire (see [Quality threshold](#quality-threshold)):
+
+- **Output formats** — asked when `formats` is configured nowhere (no CLI option, no `FORMATS` env, no `formats`
+  config key). Accepts a comma-separated list of `original`, `mp3`, `wav`, `flac`; the answer is persisted, so it
+  is not asked again — delete the `formats` key from `config/playlists-sync.json` to re-trigger it.
+- **Minimum source audio quality (estimated ODG)** — asked **once**, only when `min-odg` is configured nowhere (no
+  CLI option, no `MIN_ODG` env, no `min_odg` config key). The prompt is guided: it lists quality tiers with
+  real-world decision help — `[1]` Archive / Pro Club Standard (ODG ≥ -0.2 | ≈320 kbps MP3 / 256 AAC / 182 Opus,
+  large venue PAs), `[2]` Semi-Pro Performance Minimum (ODG ≥ -1.0 | ≈192 kbps MP3 / 128 AAC / 96 Opus, minimum
+  safe gig threshold), `[3]` Preview Only (ODG ≥ -2.0 | ≈128 kbps MP3 / 89 AAC / 64 Opus, casual listening),
+  `[4]` Off — and accepts an option number, a custom ODG value between -4 and 0 (e.g. `-1.5`), or an empty answer
+  for off. The answer (including "off") is persisted, so it is never asked again; delete the `min_odg` key from
+  `config/playlists-sync.json` to re-trigger it.
+- **Low-quality handling (`warn`/`filter`)** — asked **every interactive run while a minimum is active**,
+  defaulting to the saved/env value. Passing `--min-odg-mode` suppresses the prompt; the answer is persisted as the
+  next run's default.
 
 ```bash
 ddev exec bin/console playlists:sync
@@ -55,7 +86,8 @@ ddev exec bin/console playlists:sync \
 
 ### Non-interactive run
 
-All required args must be provided via flags or `.env`; exits immediately if any are missing:
+`-n` skips all prompts (including the quality-threshold ones). All required args must be provided via flags, `.env`,
+or the config file; exits immediately if any are missing:
 
 ```bash
 ddev exec bin/console playlists:sync \
@@ -83,9 +115,11 @@ ddev exec env FORMATS=mp3,flac \
 
 ### With cookies (authenticated / private playlists)
 
+Cookies are picked up automatically from `config/cookies.txt` (Netscape format) when the file exists:
+
 ```bash
-ddev exec env COOKIES_FILE=cookies.txt \
-  bin/console playlists:sync \
+cp config/cookies.txt.example config/cookies.txt   # then paste your exported cookies
+ddev exec bin/console playlists:sync \
   -i config/playlists.txt \
   -o downloads
 ```
@@ -112,17 +146,51 @@ ddev ssh
 bin/console playlists:sync
 ```
 
-## Options
+## Parameters
 
-| Flag               | Short | Default                 | Description                                    |
-|--------------------|-------|-------------------------|------------------------------------------------|
-| `--input`          | `-i`  | prompted / `INPUT_FILE` | Path to file with playlist URLs                |
-| `--out`            | `-o`  | prompted / `OUTPUT_DIR` | Base output directory                          |
-| `--playlists-dir`  |       | `OUTPUT_DIR/playlists`  | Directory for M3U8 files                       |
-| `--no-interaction` | `-n`  | —                       | Non-interactive: fail if required args missing |
-| `--help`           | `-h`  | —                       | Show full option reference                     |
+Resolution order for every row: CLI option → env var → `config/playlists-sync.json` key → prompt (where marked) →
+default (see [Parameter resolution](#parameter-resolution)).
+
+| Parameter            | CLI option                | Env var                 | Config key              | Prompted when                                                              | Default                                        |
+|----------------------|---------------------------|-------------------------|-------------------------|----------------------------------------------------------------------------|------------------------------------------------|
+| Input file           | `--input` / `-i`          | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
+| Output dir           | `--out` / `-o`            | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
+| M3U8 dir             | `--playlists-dir`         | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
+| Min est. ODG         | `--min-odg`               | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
+| Min ODG mode         | `--min-odg-mode`          | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
+| Formats              | `--formats`               | `FORMATS`               | `formats`               | when unresolved, every interactive run                                     | `original,mp3,wav,flac`                        |
+| MP3 mode             | `--mp3-mode`              | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
+| MP3 bitrate (CBR)    | `--mp3-bitrate`           | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
+| MP3 quality (VBR)    | `--mp3-quality`           | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
+| Library dir          | `--library-dir`           | `LIBRARY_DIR`           | `library_dir`           | never                                                                      | `OUT/library`                                  |
+| Archive dir          | `--archive-dir`           | `ARCHIVE_DIR`           | `archive_dir`           | never                                                                      | `OUT/.archive`                                 |
+| Filename template    | `--lib-filename-template` | `LIB_FILENAME_TEMPLATE` | `lib_filename_template` | never                                                                      | `%(id)s - %(title)s`                           |
+| yt-dlp binary        | `--ytdlp-bin`             | `YTDLP_BIN`             | `ytdlp_bin`             | never                                                                      | `yt-dlp`                                       |
+| spotdl binary        | `--spotdl-bin`            | `SPOTDL_BIN`            | `spotdl_bin`            | never                                                                      | `spotdl`                                       |
+| ffmpeg binary        | `--ffmpeg-bin`            | `FFMPEG_BIN`            | `ffmpeg_bin`            | never                                                                      | `ffmpeg`                                       |
+| ffprobe binary       | `--ffprobe-bin`           | `FFPROBE_BIN`           | `ffprobe_bin`           | never                                                                      | `ffprobe`                                      |
+| Cookies (both tools) | `--cookies`               | `COOKIES_FILE`          | `cookies_file`          | never                                                                      | `config/cookies.txt` (used if the file exists) |
+| yt-dlp cookies       | `--ytdlp-cookies`         | `YTDLP_COOKIE_FILE`     | `ytdlp_cookie_file`     | never                                                                      | falls back to Cookies                          |
+| spotdl cookies       | `--spotdl-cookies`        | `SPOTDL_COOKIE_FILE`    | `spotdl_cookie_file`    | never                                                                      | falls back to Cookies                          |
+| Extractor retries    | `--extractor-retries`     | `EXTRACTOR_RETRIES`     | `extractor_retries`     | never                                                                      | `10`                                           |
+| Retry sleep          | `--retry-sleep`           | `RETRY_SLEEP`           | `retry_sleep`           | never                                                                      | `exp=2:10:120`                                 |
+| Sleep requests       | `--sleep-requests`        | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                      | `2`                                            |
+| Rate limit           | `--limit-rate`            | `LIMIT_RATE`            | `limit_rate`            | never                                                                      | off                                            |
+| Pause between        | `--pause-between`         | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                      | `2`                                            |
+
+One cookie file (Netscape format holds cookies for multiple domains — e.g. SoundCloud for yt-dlp plus YouTube Music
+for spotdl) serves both tools by default; the per-tool parameters override it individually. A cookie file is only
+passed on when it actually exists. **Breaking**: `config/spotdl-cookies.txt` is no longer a default — point
+`--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file` at it or merge its cookies into
+`config/cookies.txt`.
+
+`-n`/`--no-interaction` skips all prompts (input/output are then required via CLI, env, or config);
+`-h`/`--help` shows the full option reference.
 
 ## .env reference
+
+Every env var also has a `config/playlists-sync.json` equivalent (snake_case key, see the table above); env wins
+over the config file. `config/playlists-sync.json.example` is the checked-in starting point.
 
 ```dotenv
 INPUT_FILE=config/playlists.txt
@@ -136,21 +204,31 @@ FFPROBE_BIN=ffprobe             # detects source sample rate for resampling
 # Formats: any of original, mp3, wav, flac (comma-separated)
 FORMATS=original,mp3,wav,flac
 
-# LAME VBR quality — 0 = highest (~245 kbps), 9 = lowest
-MP3_QUALITY=0
+# MP3 encoding: cbr (default) or vbr. CBR is used by default because some DJ software (e.g.
+# Rekordbox) misreports the bitrate of VBR MP3s — it reads the first frame instead of the true
+# average, which can show a near-silent track intro's low bitrate as "the" bitrate.
+MP3_MODE=cbr
+MP3_BITRATE=320                 # CBR bitrate in kbps (MP3_MODE=cbr only)
+MP3_QUALITY=0                   # LAME VBR quality — 0 = highest (~245 kbps), 9 = lowest (MP3_MODE=vbr only)
+
+# Minimum estimated ODG, PEAQ scale -4..0 (unset = feature off)
+# MIN_ODG=-2
+# warn (default) = list low-quality tracks in the summary; filter = skip them at download
+# MIN_ODG_MODE=warn
 
 # Base filename template for library files — yt-dlp sources only;
 # Spotify tracks always use "{track-id} - {title}" so the conversion loop finds them
 LIB_FILENAME_TEMPLATE=%(id)s - %(title)s
 
-# Cookies for private / liked content (Netscape format)
-COOKIES_FILE=cookies.txt
+# Cookies (Netscape format) — one file for both yt-dlp and spotdl, only used when it exists
+COOKIES_FILE=config/cookies.txt
+# Per-tool overrides (each falls back to COOKIES_FILE)
+# YTDLP_COOKIE_FILE=config/cookies.txt
+# With YT Music Premium cookies spotdl downloads 256 kbps m4a originals instead of 128 kbps
+# SPOTDL_COOKIE_FILE=config/cookies.txt
 
 # Spotify via spotdl
 SPOTDL_BIN=spotdl
-# Optional YouTube Music cookies (Netscape format) — with YT Music Premium spotdl
-# downloads 256 kbps m4a originals instead of 128 kbps
-SPOTDL_COOKIE_FILE=config/spotdl-cookies.txt
 
 # Shared library and archive dirs (default under OUTPUT_DIR)
 # LIBRARY_DIR=./downloads/library
@@ -176,9 +254,9 @@ goes to yt-dlp. spotdl matches each Spotify track on YouTube Music and downloads
 
 - Deduplication uses a separate archive (`.archive/spotify.txt` — spotdl stores song URLs, yt-dlp stores
   `extractor id` pairs, so the files are never mixed).
-- Optional `config/spotdl-cookies.txt` (YouTube Music cookies, Netscape format): with YT Music Premium spotdl
-  downloads 256 kbps m4a instead of 128 kbps. This is a different site/account than `config/cookies.txt`
-  (SoundCloud cookies for yt-dlp).
+- Optional YouTube Music cookies (Netscape format): with YT Music Premium spotdl downloads 256 kbps m4a instead of
+  128 kbps. By default spotdl shares `config/cookies.txt` with yt-dlp (one Netscape file can hold cookies for both
+  sites); use `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file` for a separate file.
 - spotdl embeds tags and cover art into the m4a originals itself. Converted mp3/wav/flac keep the tags (ffmpeg
   copies container metadata), but cover art is only present in the originals — Spotify sources have no `.jpg`
   sidecar to re-embed from.
@@ -204,10 +282,15 @@ downloads/
     flac/
       <id> - <title>.flac
   playlists/
+    <Uploader> - <Playlist Title> - original.m3u8
     <Uploader> - <Playlist Title> - mp3.m3u8
     <Uploader> - <Playlist Title> - wav.m3u8
     <Uploader> - <Playlist Title> - flac.m3u8
 ```
+
+`original` is a real output format like the others: including it in `FORMATS` writes a playlist referencing the
+untouched downloaded files (whatever container yt-dlp/spotdl produced — `.m4a`, `.webm`, `.opus`, ...) alongside
+whichever converted formats are also requested.
 
 ## Download summary
 
@@ -223,6 +306,64 @@ Download: 3 new, 30 already in archive, 2 failed
   by diffing the playlist against a snapshot of the archive taken *before* the run.
 - **failed** — tracks that were neither downloaded nor already archived (e.g. DRM-protected or geo-restricted); the
   suffix is omitted when zero. yt-dlp prints the underlying `ERROR:` lines for these.
+
+## Quality threshold
+
+`--min-odg` / `MIN_ODG` / `min_odg` sets a minimum source audio quality as an **estimated ODG** (Objective
+Difference Grade, the PEAQ scale: 0 = transparent … -4 = very annoying). The same perceptual quality needs
+different bitrates per codec (≈192 kbps MP3 ≈ 128 kbps AAC ≈ 96 kbps Opus), so the raw bitrate alone is a poor
+metric — a 128 kbps Opus source is *not* worse than a 160 kbps MP3. True PEAQ needs the lossless original as a
+reference (unavailable for downloads), so the ODG is **estimated**: the source's codec + bitrate are looked up in a
+per-codec calibration table (`mp3`, `aac`, `opus`, `vorbis` anchor points) with linear interpolation. Lossless
+sources (FLAC/ALAC/PCM/…) are always ODG 0; unknown codecs use the conservative MP3 curve. Unset = feature off.
+
+The bitrate is yt-dlp's `abr` (average audio bitrate) from the `.info.json`, falling back to `tbr` (total
+bitrate); the codec comes from `acodec`. When the sidecar has no bitrate (always the case for spotdl tracks), a
+single `ffprobe` call probes both codec and bitrate from the downloaded file.
+
+When the minimum is configured nowhere (no CLI option, no env var, no config key), an interactive run asks for it
+**once** and persists the answer to `config/playlists-sync.json` — an empty answer persists `"min_odg": null`
+("off"), so the question is not repeated. Delete the `min_odg` key from the config file to re-trigger the prompt.
+
+`--min-odg-mode` / `MIN_ODG_MODE` / `min_odg_mode` picks the behaviour. While a minimum is active, an interactive
+run asks for the mode **every time** (saved/env value pre-selected as the default; `--min-odg-mode` suppresses the
+prompt; `-n` skips it):
+
+- `warn` (default): everything is downloaded; after conversion, tracks whose estimated ODG is
+  below the threshold are listed in an end-of-run warning (raw kbps, codec, and estimated ODG shown).
+- `filter`: yt-dlp cannot compute ODG, so the threshold is inverted per codec into a minimum
+  bitrate and expressed as one format-selector branch per codec prefix, e.g. for ODG ≥ -1:
+  `bestaudio[acodec^=opus][abr>=96]/bestaudio[acodec^=mp4a][abr>=128]/…/bestaudio[acodec^=mp3][abr>=192]/…`
+  (lossless codecs always pass; codecs that cannot reach the threshold at any bitrate get no
+  branch). The filter is fail-closed: formats with *unknown* bitrate or codec do not match, so
+  nothing silently falls through. Skipped tracks are reported separately from failed tracks and
+  do not count as playlist errors.
+
+Notes:
+
+- Spotify downloads cannot be skipped — spotdl has no per-track quality filter, so the file
+  is always downloaded first. Its codec + bitrate are then probed with `ffprobe`, and in filter mode
+  tracks below the threshold are excluded from conversions and playlist files afterwards.
+- Filter-skipped tracks are **not** added to the download archive, so they are re-checked on
+  every run (a later re-upload or higher-quality format gets picked up automatically, at the
+  cost of one extraction attempt per run).
+- In filter mode, already-downloaded originals below the threshold (e.g. from runs before the
+  threshold existed) are also excluded from conversions and playlist files. The original files
+  stay on disk and are listed in the end-of-run warning.
+
+## MP3 encoding
+
+`--mp3-mode` / `MP3_MODE` / `mp3_mode` picks between `cbr` (constant bitrate, **default**) and `vbr` (variable
+bitrate). CBR is the default because some DJ software (Rekordbox, at least) misreports the bitrate of VBR MP3s: it
+displays the bitrate of the file's *first* frame rather than the true average, so a track with a quiet/near-silent
+intro — which LAME's VBR encoder allocates very few bits to — can show a wildly low bitrate (e.g. "32 kbit/s") in
+the DJ software even though the actual average is much higher. CBR sidesteps this entirely since every frame has
+the same bitrate.
+
+- `cbr`: `-b:a <bitrate>k`, bitrate from `--mp3-bitrate` / `MP3_BITRATE` / `mp3_bitrate` (default `320`).
+- `vbr`: `-q:a <quality>`, quality from `--mp3-quality` / `MP3_QUALITY` / `mp3_quality` (default `0` = highest,
+  ~245 kbps average; `9` = lowest). Smaller files than CBR at the same audible quality, at the cost of the
+  bitrate-misreport risk above.
 
 ## Sample-rate normalization
 
@@ -250,7 +391,7 @@ independently; all audio is stored once in the shared library.
 
 | Symptom                                                             | Fix                                                                                                                           |
 |---------------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------|
-| 403/429 errors                                                      | Add `COOKIES_FILE` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env`                                        |
+| 403/429 errors                                                      | Add `config/cookies.txt` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env`                                  |
 | Missing thumbnails / metadata                                       | Update yt-dlp: `ddev exec pip install -U yt-dlp`                                                                              |
 | Want to add a format later                                          | Re-run with updated `FORMATS` — originals are cached, only new conversions run                                                |
 | yt-dlp not found                                                    | `ddev exec pip install yt-dlp` or add it to `.ddev/web-build/Dockerfile`                                                      |
