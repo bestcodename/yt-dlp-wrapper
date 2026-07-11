@@ -1,5 +1,6 @@
-1. generalize more code from both commands if there still is potential (the classes are slowly growing more and more
-   LOCs)
+1. fix bitrate still not shown corretly in rekordbox after rerunning sync
+   e.g. https://soundcloud.com/nicolas-enjolras/03-bioterrorist-attack
+   do i maybe have to redownload everything? or can i just redo the conversion step to force overwrite existing files?
 
 2. Testing
     1. Analyze test code coverage

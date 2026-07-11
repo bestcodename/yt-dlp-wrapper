@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\Process\ProcessRunner;
+use App\Process\ProcOpenProcessRunner;
 use JsonException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -12,9 +14,20 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
 use Symfony\Component\Console\Question\ConfirmationQuestion;
 use Symfony\Component\Console\Question\Question;
+use Symfony\Component\Console\Style\SymfonyStyle;
 
 abstract class BaseCommand extends Command
 {
+    protected SymfonyStyle $io;
+
+    protected readonly ProcessRunner $runner;
+
+    public function __construct(?ProcessRunner $runner = null, ?string $name = null)
+    {
+        parent::__construct($name);
+        $this->runner = $runner ?? new ProcOpenProcessRunner();
+    }
+
     /**
      * Lenient boolean for CLI/env values: 1/true/yes/y/on (case-insensitive) are true,
      * everything else is false.
@@ -102,27 +115,13 @@ abstract class BaseCommand extends Command
         return $helper->ask($input, $output, $q);
     }
 
-    protected function loadConfig(): array
+    /**
+     * TOCTOU-safe "create dir or confirm it already exists"; returns false on failure.
+     */
+    protected function ensureDirectory(string $dir, int $mode = 0755): bool
     {
-        return $this->loadConfigFrom($this->getConfigPath());
+        return is_dir($dir) || (@mkdir($dir, $mode, true) && is_dir($dir)) || is_dir($dir);
     }
-
-    protected function loadConfigFrom(string $path): array
-    {
-        $result = [];
-        if (is_file($path)) {
-            try {
-                $data = json_decode((string)file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
-                $result = is_array($data) ? $data : [];
-            } catch (JsonException) {
-                // malformed config — return empty
-            }
-        }
-
-        return $result;
-    }
-
-    abstract protected function getConfigPath(): string;
 
     /**
      * Minimal .env loader: DOTENV_PATH override, then cwd, then repo root — first file wins.
@@ -190,9 +189,40 @@ abstract class BaseCommand extends Command
         return $default;
     }
 
+    /**
+     * Fresh-load-then-merge config update: avoids clobbering keys written by another
+     * process/call between a stale load and this save.
+     */
+    protected function updateConfig(array $updates): void
+    {
+        $this->saveConfig(array_merge($this->loadConfig(), $updates));
+    }
+
     protected function saveConfig(array $config): void
     {
         $json = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
         file_put_contents($this->getConfigPath(), $json."\n");
+    }
+
+    abstract protected function getConfigPath(): string;
+
+    protected function loadConfig(): array
+    {
+        return $this->loadConfigFrom($this->getConfigPath());
+    }
+
+    protected function loadConfigFrom(string $path): array
+    {
+        $result = [];
+        if (is_file($path)) {
+            try {
+                $data = json_decode((string)file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+                $result = is_array($data) ? $data : [];
+            } catch (JsonException) {
+                // malformed config — return empty
+            }
+        }
+
+        return $result;
     }
 }
