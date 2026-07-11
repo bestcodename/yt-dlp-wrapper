@@ -18,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (Rekordbox) misreports VBR MP3 bitrate — it reads the first frame's bitrate instead of the true average, so a
   track with a quiet intro can display a wildly low bitrate (e.g. "32 kbit/s") despite a much higher real average.
   Never prompted (E-category parameter, like the other ffmpeg/binary options)
+- `playlists:sync` — `--reencode-stale-mp3` / `--no-reencode-stale-mp3` (on by default): under `--mp3-mode=cbr`,
+  probes each existing mp3 target's average bitrate and, if it's off from `--mp3-bitrate` by more than 10%
+  (or 8 kbps), deletes and reconverts it — no redownload needed, the source stays archived. Fixes mp3s
+  converted before switching to CBR (the same "32 kbit/s" scenario above) without manually deleting files
 - `playlists:sync` — CLI options for every parameter (`--formats`, `--mp3-quality`, `--library-dir`,
   `--archive-dir`, `--lib-filename-template`, `--ytdlp-bin`, `--spotdl-bin`, `--ffmpeg-bin`, `--ffprobe-bin`,
   `--extractor-retries`, `--retry-sleep`, `--sleep-requests`, `--limit-rate`, `--pause-between`); resolution stays
@@ -191,6 +195,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count is now derived by diffing the playlist against a snapshot of the download archive taken before the run.
   The summary also gained a `N failed` suffix for tracks that were neither downloaded nor previously archived (e.g.
   DRM-protected or geo-restricted). Covered by new `loadArchiveIds`/`countArchived` unit tests
+- `playlists:sync` — progress bars no longer garble under `docker exec`/`ddev exec` (no pty). Symfony's `ProgressBar`
+  silently redirects to `$output->getErrorOutput()` for any `ConsoleOutputInterface` — invisible on a real terminal
+  since stdout/stderr share one tty there, but under a pty-less `exec` they're two independently-buffered pipes
+  (stderr unbuffered, stdout block-buffered) that desync when merged for display. New `barOutput()` helper forces
+  all three progress bars (`fetchBar`/`overallBar`/`convBar`) onto the same stream as the rest of the command's
+  output instead
 
 ## [0.2.0] - 2026-02-24
 
