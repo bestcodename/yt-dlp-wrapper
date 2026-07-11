@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use App\Process\ProcessRunner;
-use App\Process\ProcOpenProcessRunner;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\ProgressBar;
@@ -68,7 +66,6 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $extractorRetries;
     private string $ffmpegBin;
     private string $ffprobeBin;
-    private SymfonyStyle $io;
     private ?string $limitRate;
     private ?float $minOdg;
     private string $minOdgMode;
@@ -77,17 +74,10 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $mp3Quality;
     private int $pauseBetween;
     private string $retrySleep;
-    private readonly ProcessRunner $runner;
     private string $sleepRequests;
     private string $spotdlBin;
     private ?string $spotdlCookieFile;
     private string $ytDlpBin;
-
-    public function __construct(?ProcessRunner $runner = null)
-    {
-        parent::__construct();
-        $this->runner = $runner ?? new ProcOpenProcessRunner();
-    }
 
     private static function readTagsFromInfoJson(string $path): array
     {
@@ -275,7 +265,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 $formatsRaw,
                 static fn(?string $v): string => self::parseFormatsAnswer($v)
             );
-            $this->saveConfig(array_merge($this->loadConfig(), ['formats' => $formatsRaw]));
+            $this->updateConfig(['formats' => $formatsRaw]);
         }
 
         try {
@@ -326,10 +316,10 @@ class PlaylistsSyncCommand extends BaseCommand
             }
             // reload fresh (not the stale $config captured at the top of execute()) so an
             // earlier prompt save in this same run — e.g. formats — isn't clobbered
-            $this->saveConfig(array_merge($this->loadConfig(), [
+            $this->updateConfig([
                 'input_file' => $inputFile,
                 'output_dir' => $baseOutDir,
-            ]));
+            ]);
         } elseif (!$inputFile || !$baseOutDir) {
             $this->io->error('--input and --out are required in non-interactive mode.');
 
@@ -391,7 +381,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 static fn(?string $v): ?float => self::parseMinOdgAnswer($v)
             );
             $minOdgRaw = $answer !== null ? (string)$answer : null;
-            $this->saveConfig(array_merge($this->loadConfig(), ['min_odg' => $answer]));
+            $this->updateConfig(['min_odg' => $answer]);
         }
 
         if ($minOdgRaw !== null && (!is_numeric($minOdgRaw) || (float)$minOdgRaw < -4 || (float)$minOdgRaw > 0)) {
@@ -418,7 +408,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 ['warn', 'filter'],
                 in_array($minOdgMode, ['warn', 'filter'], true) ? $minOdgMode : 'warn'
             );
-            $this->saveConfig(array_merge($this->loadConfig(), ['min_odg_mode' => $minOdgMode]));
+            $this->updateConfig(['min_odg_mode' => $minOdgMode]);
         } elseif (!in_array($minOdgMode, ['warn', 'filter'], true)) {
             $this->io->error(
                 "Invalid --min-odg-mode / MIN_ODG_MODE value: $minOdgMode (expected \"warn\" or \"filter\")"
@@ -441,7 +431,7 @@ class PlaylistsSyncCommand extends BaseCommand
 
             return Command::FAILURE;
         }
-        if (!is_dir($baseOutDir) && !@mkdir($baseOutDir, 0777, true) && !is_dir($baseOutDir)) {
+        if (!$this->ensureDirectory($baseOutDir, 0777)) {
             $this->io->error("Failed to create output directory: $baseOutDir");
 
             return Command::FAILURE;
@@ -470,19 +460,19 @@ class PlaylistsSyncCommand extends BaseCommand
         );
 
         foreach ([$libraryDir, $archiveDir] as $dir) {
-            if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+            if (!$this->ensureDirectory($dir, 0777)) {
                 $this->io->error("Failed to create directory: $dir");
 
                 return Command::FAILURE;
             }
         }
         $originalLibDir = $libraryDir.DIRECTORY_SEPARATOR.'original';
-        if (!is_dir($originalLibDir) && !@mkdir($originalLibDir, 0777, true) && !is_dir($originalLibDir)) {
+        if (!$this->ensureDirectory($originalLibDir, 0777)) {
             $this->io->error("Failed to create directory: $originalLibDir");
 
             return Command::FAILURE;
         }
-        if ($playlistsDir && !is_dir($playlistsDir) && !@mkdir($playlistsDir, 0777, true) && !is_dir($playlistsDir)) {
+        if ($playlistsDir && !$this->ensureDirectory($playlistsDir, 0777)) {
             $this->io->error("Failed to create playlists directory: $playlistsDir");
 
             return Command::FAILURE;
@@ -653,7 +643,7 @@ class PlaylistsSyncCommand extends BaseCommand
             }
 
             foreach ($formatDirs as $d) {
-                if (!is_dir($d) && !@mkdir($d, 0777, true) && !is_dir($d)) {
+                if (!$this->ensureDirectory($d, 0777)) {
                     $this->io->error("Failed to create directory: $d");
                     $failed[] = "$plFolder — failed to create directory $d";
                     $overallBar->advance(count($plEntries));

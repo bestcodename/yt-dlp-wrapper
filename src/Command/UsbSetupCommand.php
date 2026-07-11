@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use App\Process\ProcessRunner;
-use App\Process\ProcOpenProcessRunner;
 use FilesystemIterator;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
@@ -26,16 +24,6 @@ class UsbSetupCommand extends BaseCommand
     /** Windows/desktop-trash/vfat-fsck artifacts never worth mirroring between sticks. */
     private const ISO_VARIANTS = ['standard', 'gnome', 'kde', 'cinnamon', 'lxde', 'lxqt', 'mate', 'xfce'];
     private const RSYNC_EXCLUDES = ['System Volume Information', '.Trash-*', '.Trashes', 'FOUND.[0-9][0-9][0-9]'];
-
-    private SymfonyStyle $io;
-
-    private readonly ProcessRunner $runner;
-
-    public function __construct(?ProcessRunner $runner = null)
-    {
-        parent::__construct();
-        $this->runner = $runner ?? new ProcOpenProcessRunner();
-    }
 
     protected function configure(): void
     {
@@ -421,7 +409,7 @@ class UsbSetupCommand extends BaseCommand
             if ($sourceDevice !== null) {
                 $updates['source_device'] = $sourceDevice;
             }
-            $this->saveConfig(array_merge($this->loadConfig(), $updates));
+            $this->updateConfig($updates);
         } elseif ($device === null) {
             $this->io->error('--device is required in non-interactive mode.');
 
@@ -1262,7 +1250,7 @@ class UsbSetupCommand extends BaseCommand
 
     private function downloadDebianIso(string $variant, OutputInterface $output, string $cacheDir): string
     {
-        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+        if (!$this->ensureDirectory($cacheDir, 0755)) {
             throw new RuntimeException("Cannot create ISO cache directory: $cacheDir");
         }
 
@@ -1401,7 +1389,7 @@ class UsbSetupCommand extends BaseCommand
         bool $readOnly = false
     ): string {
         $mount = sys_get_temp_dir().'/usb_setup_'.getmypid().($suffix !== '' ? '_'.$suffix : '');
-        if (!is_dir($mount) && !mkdir($mount, 0700, true) && !is_dir($mount)) {
+        if (!$this->ensureDirectory($mount, 0700)) {
             throw new RuntimeException("Cannot create mount point {$mount}.");
         }
         [$exit] = $this->runCmd(
@@ -1594,7 +1582,7 @@ class UsbSetupCommand extends BaseCommand
 
     private function downloadSoftwareFile(string $url, OutputInterface $output, string $cacheDir): string
     {
-        if (!is_dir($cacheDir) && !mkdir($cacheDir, 0755, true) && !is_dir($cacheDir)) {
+        if (!$this->ensureDirectory($cacheDir, 0755)) {
             throw new RuntimeException("Cannot create download cache directory: $cacheDir");
         }
 
@@ -1979,7 +1967,7 @@ class UsbSetupCommand extends BaseCommand
             throw new RuntimeException('mkfs.ext4 failed on persistence file.');
         }
         $tmpMount = sys_get_temp_dir().'/persist_'.getmypid();
-        if (!is_dir($tmpMount) && !mkdir($tmpMount, 0700, true) && !is_dir($tmpMount)) {
+        if (!$this->ensureDirectory($tmpMount, 0700)) {
             throw new RuntimeException("Cannot create temp mount {$tmpMount}.");
         }
         [$exit] = $this->runCmd(
@@ -2021,7 +2009,7 @@ class UsbSetupCommand extends BaseCommand
     private function writeVentoyJson(string $mountPoint, string $isoName, string $persistenceDat): void
     {
         $ventoyDir = rtrim($mountPoint, '/').'/ventoy';
-        if (!is_dir($ventoyDir) && !mkdir($ventoyDir, 0755, true) && !is_dir($ventoyDir)) {
+        if (!$this->ensureDirectory($ventoyDir, 0755)) {
             throw new RuntimeException('Cannot create /ventoy directory on USB.');
         }
         $jsonPath = $ventoyDir.'/ventoy.json';
@@ -2048,7 +2036,7 @@ class UsbSetupCommand extends BaseCommand
         bool $isUpdate
     ): void {
         $dir = rtrim($mountPoint, '/').'/software';
-        if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+        if (!$this->ensureDirectory($dir, 0755)) {
             throw new RuntimeException('Cannot create /software directory on USB.');
         }
 
@@ -2056,7 +2044,7 @@ class UsbSetupCommand extends BaseCommand
             $source = $file['source'];
             $relative = $file['relative'];
             $destDir = dirname($dir.'/'.$relative);
-            if (!is_dir($destDir) && !mkdir($destDir, 0755, true) && !is_dir($destDir)) {
+            if (!$this->ensureDirectory($destDir, 0755)) {
                 $this->io->warning("Cannot create destination directory for $relative on USB — skipping.");
                 continue;
             }

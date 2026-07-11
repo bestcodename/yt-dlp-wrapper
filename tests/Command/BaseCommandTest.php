@@ -11,14 +11,39 @@ final class BaseCommandTest extends TestCase
 {
     private string $configPath;
 
-    protected function setUp(): void
+    public function testEnsureDirectoryCreatesMissingDirectory(): void
     {
-        $this->configPath = tempnam(sys_get_temp_dir(), 'basecmd_test_').'.json';
+        $dir = sys_get_temp_dir().'/basecmd_test_'.uniqid('', true).'/nested';
+        $cmd = $this->makeCommand();
+
+        try {
+            self::assertTrue($cmd->makeDir($dir, 0755));
+            self::assertDirectoryExists($dir);
+        } finally {
+            @rmdir($dir);
+            @rmdir(dirname($dir));
+        }
     }
 
-    protected function tearDown(): void
+    public function testEnsureDirectoryReturnsTrueWhenAlreadyExists(): void
+    {
+        $dir = sys_get_temp_dir();
+
+        self::assertTrue($this->makeCommand()->makeDir($dir));
+    }
+
+    public function testLoadConfigMalformedJsonReturnsEmpty(): void
+    {
+        file_put_contents($this->configPath, '{not json');
+
+        self::assertSame([], $this->makeCommand()->load());
+    }
+
+    public function testLoadConfigMissingFileReturnsEmpty(): void
     {
         @unlink($this->configPath);
+
+        self::assertSame([], $this->makeCommand()->load());
     }
 
     private function makeCommand(): BaseCommand
@@ -26,7 +51,7 @@ final class BaseCommandTest extends TestCase
         return new class($this->configPath) extends BaseCommand {
             public function __construct(private readonly string $configPath)
             {
-                parent::__construct('test:config');
+                parent::__construct(name: 'test:config');
             }
 
             protected function getConfigPath(): string
@@ -45,21 +70,18 @@ final class BaseCommandTest extends TestCase
             {
                 $this->saveConfig($config);
             }
+
+            /** @param array<string, mixed> $updates */
+            public function update(array $updates): void
+            {
+                $this->updateConfig($updates);
+            }
+
+            public function makeDir(string $dir, int $mode = 0755): bool
+            {
+                return $this->ensureDirectory($dir, $mode);
+            }
         };
-    }
-
-    public function testLoadConfigMissingFileReturnsEmpty(): void
-    {
-        @unlink($this->configPath);
-
-        self::assertSame([], $this->makeCommand()->load());
-    }
-
-    public function testLoadConfigMalformedJsonReturnsEmpty(): void
-    {
-        file_put_contents($this->configPath, '{not json');
-
-        self::assertSame([], $this->makeCommand()->load());
     }
 
     public function testLoadConfigNonObjectJsonReturnsEmpty(): void
@@ -67,16 +89,6 @@ final class BaseCommandTest extends TestCase
         file_put_contents($this->configPath, '"just a string"');
 
         self::assertSame([], $this->makeCommand()->load());
-    }
-
-    public function testSaveThenLoadRoundtrip(): void
-    {
-        $cmd = $this->makeCommand();
-        $config = ['device' => '/dev/sdb', 'persistence_mib' => 4090, 'install_ventoy' => true];
-
-        $cmd->save($config);
-
-        self::assertSame($config, $cmd->load());
     }
 
     public function testSaveOverwritesPreviousContent(): void
@@ -92,5 +104,38 @@ final class BaseCommandTest extends TestCase
             ['device' => '/dev/sdb', 'device_name' => 'usb Verbatim STORE N GO'],
             $cmd->load()
         );
+    }
+
+    public function testSaveThenLoadRoundtrip(): void
+    {
+        $cmd = $this->makeCommand();
+        $config = ['device' => '/dev/sdb', 'persistence_mib' => 4090, 'install_ventoy' => true];
+
+        $cmd->save($config);
+
+        self::assertSame($config, $cmd->load());
+    }
+
+    public function testUpdateConfigMergesOntoFreshLoad(): void
+    {
+        $cmd = $this->makeCommand();
+        $cmd->save(['device' => '/dev/sda', 'device_name' => 'usb Verbatim STORE N GO']);
+
+        $cmd->update(['device' => '/dev/sdb']);
+
+        self::assertSame(
+            ['device' => '/dev/sdb', 'device_name' => 'usb Verbatim STORE N GO'],
+            $cmd->load()
+        );
+    }
+
+    protected function setUp(): void
+    {
+        $this->configPath = tempnam(sys_get_temp_dir(), 'basecmd_test_').'.json';
+    }
+
+    protected function tearDown(): void
+    {
+        @unlink($this->configPath);
     }
 }
