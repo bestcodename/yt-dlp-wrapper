@@ -16,6 +16,43 @@ use Symfony\Component\Console\Output\StreamOutput;
 final class PlaylistsSyncCommandTest extends TestCase
 {
     /**
+     * @return array<string, array{string, string, string, string, string}>
+     */
+    public static function buildM3uPathProvider(): array
+    {
+        return [
+            'flat default' => [
+                '/out/playlists',
+                'flat',
+                'DJ - My List',
+                'mp3',
+                '/out/playlists/DJ - My List - mp3.m3u8',
+            ],
+            'flat with trailing separator on playlistsDir' => [
+                '/out/playlists/',
+                'flat',
+                'DJ - My List',
+                'mp3',
+                '/out/playlists/DJ - My List - mp3.m3u8',
+            ],
+            'per-playlist' => [
+                '/out/playlists',
+                'per-playlist',
+                'DJ - My List',
+                'mp3',
+                '/out/playlists/DJ - My List/mp3.m3u8',
+            ],
+            'per-format' => [
+                '/out/playlists',
+                'per-format',
+                'DJ - My List',
+                'mp3',
+                '/out/playlists/mp3/DJ - My List.m3u8',
+            ],
+        ];
+    }
+
+    /**
      * @return array<string, array{string, string}>
      */
     public static function classifySourceUrlProvider(): array
@@ -61,6 +98,77 @@ final class PlaylistsSyncCommandTest extends TestCase
             'spaces around entries' => [' mp3 , wav ', 'mp3,wav'],
             'dedups repeats' => ['mp3,mp3,wav', 'mp3,wav'],
             'trailing comma' => ['mp3,wav,', 'mp3,wav'],
+            '"all" keyword expands to every format' => ['all', 'original,mp3,wav,flac'],
+            '"all" is case-insensitive' => ['ALL', 'original,mp3,wav,flac'],
+            '"all" mixed with other entries still expands to every format' => ['mp3,all', 'original,mp3,wav,flac'],
+            '"all" with surrounding whitespace' => [' all ', 'original,mp3,wav,flac'],
+        ];
+    }
+
+    /**
+     * @return array<string, array{list<string>, list<array{url: string, alias: ?string}>}>
+     */
+    public static function parseInputFileEntriesProvider(): array
+    {
+        return [
+            'plain url only' => [
+                ["https://soundcloud.com/x/sets/y\n"],
+                [['url' => 'https://soundcloud.com/x/sets/y', 'alias' => null]],
+            ],
+            'blank-line-separated plain comment header has no effect' => [
+                ["# DJ Sets\n", "\n", "https://soundcloud.com/x/sets/a\n", "https://soundcloud.com/x/sets/b\n"],
+                [
+                    ['url' => 'https://soundcloud.com/x/sets/a', 'alias' => null],
+                    ['url' => 'https://soundcloud.com/x/sets/b', 'alias' => null],
+                ],
+            ],
+            'plain comment directly above a url has no effect (regression: config/playlists.txt)' => [
+                ["# Ciul\n", "https://open.spotify.com/playlist/2BcbNwFxuykzGNKDoY4c4H\n"],
+                [['url' => 'https://open.spotify.com/playlist/2BcbNwFxuykzGNKDoY4c4H', 'alias' => null]],
+            ],
+            'alias directly above a url applies' => [
+                ["# alias: My Chill Mix\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => 'My Chill Mix']],
+            ],
+            'alias with extra whitespace and mixed case' => [
+                ["#   Alias:   My Mix  \n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => 'My Mix']],
+            ],
+            'alias uppercase no spaces' => [
+                ["#ALIAS:X\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => 'X']],
+            ],
+            'alias separated from url by a blank line does not apply' => [
+                ["# alias: My Mix\n", "\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => null]],
+            ],
+            'alias separated from url by another comment does not apply' => [
+                ["# alias: My Mix\n", "# just a note\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => null]],
+            ],
+            'two consecutive alias comments: last one wins' => [
+                ["# alias: First\n", "# alias: Second\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => 'Second']],
+            ],
+            'empty alias name is ignored' => [
+                ["# alias:\n", "https://soundcloud.com/x/sets/tek\n"],
+                [['url' => 'https://soundcloud.com/x/sets/tek', 'alias' => null]],
+            ],
+            'only the aliased url gets the alias' => [
+                [
+                    "https://soundcloud.com/x/sets/a\n",
+                    "# alias: B Alias\n",
+                    "https://soundcloud.com/x/sets/b\n",
+                ],
+                [
+                    ['url' => 'https://soundcloud.com/x/sets/a', 'alias' => null],
+                    ['url' => 'https://soundcloud.com/x/sets/b', 'alias' => 'B Alias'],
+                ],
+            ],
+            'trailing alias comment with no following url is dropped' => [
+                ["https://soundcloud.com/x/sets/a\n", "# alias: Orphan\n"],
+                [['url' => 'https://soundcloud.com/x/sets/a', 'alias' => null]],
+            ],
         ];
     }
 
@@ -170,6 +278,19 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertSame($output, $method->invoke(null, $output));
     }
 
+    #[DataProvider('buildM3uPathProvider')]
+    public function testBuildM3uPath(
+        string $playlistsDir,
+        string $layout,
+        string $plFolder,
+        string $fmt,
+        string $expected
+    ): void {
+        $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'buildM3uPath');
+
+        self::assertSame($expected, $method->invoke(null, $playlistsDir, $layout, $plFolder, $fmt));
+    }
+
     #[DataProvider('classifySourceUrlProvider')]
     public function testClassifySourceUrl(string $url, string $expected): void
     {
@@ -187,6 +308,12 @@ final class PlaylistsSyncCommandTest extends TestCase
     {
         $this->expectException(RuntimeException::class);
         PlaylistsSyncCommand::parseFormatsAnswer($answer);
+    }
+
+    #[DataProvider('parseInputFileEntriesProvider')]
+    public function testParseInputFileEntries(array $lines, array $expected): void
+    {
+        self::assertSame($expected, PlaylistsSyncCommand::parseInputFileEntries($lines));
     }
 
     #[DataProvider('parseMinOdgAnswerProvider')]
