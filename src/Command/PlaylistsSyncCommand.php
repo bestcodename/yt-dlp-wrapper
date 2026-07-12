@@ -54,6 +54,7 @@ class PlaylistsSyncCommand extends BaseCommand
     public const SOURCE_SPOTIFY = 'spotify';
     public const SOURCE_YTDLP = 'ytdlp';
     private const VALID_FORMATS = ['original', 'mp3', 'wav', 'flac'];
+    private const VALID_PLAYLIST_LAYOUTS = ['flat', 'per-playlist', 'per-format'];
     private ?AudioConverter $audioConverter;
     private readonly BinaryChecker $binaryChecker;
     private ?string $cookiesFile;
@@ -100,6 +101,12 @@ class PlaylistsSyncCommand extends BaseCommand
             ->addOption('out', 'o', InputOption::VALUE_REQUIRED, 'Base output directory')
             ->addOption('playlists-dir', null, InputOption::VALUE_REQUIRED, 'Directory for M3U8 playlist files')
             ->addOption(
+                'playlist-layout',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'M3U8 directory layout: "flat" (default), "per-playlist", or "per-format"'
+            )
+            ->addOption(
                 'min-odg',
                 null,
                 InputOption::VALUE_REQUIRED,
@@ -115,7 +122,7 @@ class PlaylistsSyncCommand extends BaseCommand
                 'formats',
                 null,
                 InputOption::VALUE_REQUIRED,
-                'Comma-separated output formats: original, mp3, wav, flac'
+                'Comma-separated output formats: original, mp3, wav, flac, or "all" for every format'
             )
             ->addOption('mp3-mode', null, InputOption::VALUE_REQUIRED, 'MP3 encoding: "cbr" (default) or "vbr"')
             ->addOption('mp3-bitrate', null, InputOption::VALUE_REQUIRED, 'CBR bitrate in kbps (--mp3-mode=cbr only)')
@@ -252,21 +259,19 @@ class PlaylistsSyncCommand extends BaseCommand
             $this->reencodeStaleMp3,
         );
 
-        // Formats: CLI → env → config; prompted when configured nowhere, every interactive run
-        // (like input/output — stops firing once an answer is persisted to the config file)
+        // Formats: CLI → env → config; prompted every interactive run (pre-filled with the
+        // current env/config/default value) unless an explicit --formats CLI value is given
         $formatsCli = $input->getOption('formats');
-        $formatsEnv = getenv('FORMATS') ?: null;
-        $formatsConfigured = $formatsCli !== null || $formatsEnv !== null || array_key_exists('formats', $config);
         $formatsRaw = $formatsCli
-            ?? $formatsEnv
+            ?? (getenv('FORMATS') ?: null)
             ?? (isset($config['formats']) ? (string)$config['formats'] : null)
             ?? self::DEFAULT_FORMATS;
 
-        if ($input->isInteractive() && !$formatsConfigured) {
+        if ($input->isInteractive() && $formatsCli === null) {
             $formatsRaw = $this->askText(
                 $input,
                 $output,
-                '<question>Output formats</question> (comma-separated: original, mp3, wav, flac)',
+                '<question>Output formats</question> (comma-separated: original, mp3, wav, flac, or "all")',
                 $formatsRaw,
                 static fn(?string $v): string => self::parseFormatsAnswer($v)
             );
@@ -475,6 +480,38 @@ class PlaylistsSyncCommand extends BaseCommand
             'playlists_dir',
             $baseOutDir.DIRECTORY_SEPARATOR.'playlists'
         );
+        // Playlist layout: CLI → env → config; prompted once when configured nowhere, like formats
+        // (stops firing once an answer is persisted to the config file)
+        $playlistLayoutCli = $input->getOption('playlist-layout');
+        $playlistLayoutEnv = getenv('PLAYLIST_LAYOUT') ?: null;
+        $playlistLayoutConfigured = $playlistLayoutCli !== null
+            || $playlistLayoutEnv !== null
+            || array_key_exists('playlist_layout', $config);
+        $playlistLayout = strtolower(
+            $playlistLayoutCli
+            ?? $playlistLayoutEnv
+            ?? (isset($config['playlist_layout']) ? (string)$config['playlist_layout'] : null)
+            ?? 'flat'
+        );
+
+        if ($input->isInteractive() && !$playlistLayoutConfigured) {
+            $playlistLayout = $this->askChoice(
+                $input,
+                $output,
+                'Playlist layout (flat = one dir; per-playlist = one dir per playlist;'
+                .' per-format = one dir per format)',
+                self::VALID_PLAYLIST_LAYOUTS,
+                in_array($playlistLayout, self::VALID_PLAYLIST_LAYOUTS, true) ? $playlistLayout : 'flat'
+            );
+            $this->updateConfig(['playlist_layout' => $playlistLayout]);
+        } elseif (!in_array($playlistLayout, self::VALID_PLAYLIST_LAYOUTS, true)) {
+            $this->io->error(
+                "Invalid --playlist-layout / PLAYLIST_LAYOUT value: $playlistLayout ".
+                '(expected "flat", "per-playlist", or "per-format")'
+            );
+
+            return Command::FAILURE;
+        }
 
         foreach ([$libraryDir, $archiveDir] as $dir) {
             if (!$this->ensureDirectory($dir, 0777)) {
@@ -495,12 +532,8 @@ class PlaylistsSyncCommand extends BaseCommand
             return Command::FAILURE;
         }
 
-        $urls = array_values(
-            array_filter(
-                array_map('trim', file($inputFile)),
-                static fn($l) => $l !== '' && $l[0] !== '#'
-            )
-        );
+        $playlistEntries = self::parseInputFileEntries(file($inputFile));
+        $urls = array_column($playlistEntries, 'url');
         if (!$urls) {
             $this->io->error("No URLs found in $inputFile");
 
@@ -545,7 +578,9 @@ class PlaylistsSyncCommand extends BaseCommand
         $fetchBar->start();
 
         $playlists = [];
-        foreach ($urls as $url) {
+        foreach ($playlistEntries as $entry) {
+            $url = $entry['url'];
+            $alias = $entry['alias'];
             $fetchBar->setMessage(parse_url($url, PHP_URL_PATH) ?? $url);
             $source = self::classifySourceUrl($url);
             try {
@@ -555,7 +590,9 @@ class PlaylistsSyncCommand extends BaseCommand
                 $playlists[] = [
                     'url' => $url,
                     'source' => $source,
-                    'folder' => self::safeName(sprintf('%s - %s', $plUploader, $plTitle)),
+                    'folder' => $alias !== null
+                        ? self::safeName($alias)
+                        : self::safeName(sprintf('%s - %s', $plUploader, $plTitle)),
                     'entries' => $plEntries,
                     'skipped' => $plSkipped,
                 ];
@@ -720,7 +757,7 @@ class PlaylistsSyncCommand extends BaseCommand
                         ];
                     }
                     [$abr, $codec, $odg] = $qualityCache[$srcPath];
-                    if ($odg !== null && $odg < $this->minOdg) {
+                    if ($odg !== null && AudioConverter::isBelowMinOdg($odg, $this->minOdg)) {
                         if (!isset($lowQualityTracks[$entry['id']])) {
                             // set-playlist entries often carry no title; sidecar-less files
                             // (pre-info.json downloads) fall back to the library filename
@@ -778,10 +815,19 @@ class PlaylistsSyncCommand extends BaseCommand
                 $list = $m3uEntries[$fmt];
                 natsort($list);
                 $list = array_values($list);
-                $m3uPath = rtrim($playlistsDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR."$plFolder - $fmt.m3u8";
+                $m3uPath = self::buildM3uPath($playlistsDir, $playlistLayout, $plFolder, $fmt);
+                $m3uDir = dirname($m3uPath);
+                if (!$this->ensureDirectory($m3uDir, 0777)) {
+                    $this->io->error("Failed to create directory: $m3uDir");
+                    $failed[] = "$plFolder — failed to create directory $m3uDir";
+                    continue;
+                }
                 $m3u = "#EXTM3U\n";
+                // $m3uDir must already exist (ensureDirectory() above) before this loop runs —
+                // relativePath() realpath()s its "from" argument and silently falls back to a
+                // non-canonicalized path otherwise, which can miscount the "../" prefix.
                 foreach ($list as $abs) {
-                    $m3u .= str_replace('\\', '/', self::relativePath($playlistsDir, $abs))."\n";
+                    $m3u .= str_replace('\\', '/', self::relativePath($m3uDir, $abs))."\n";
                 }
                 file_put_contents($m3uPath, $m3u);
                 $this->io->text("Wrote playlist: $m3uPath (".count($list).' entries)');
@@ -870,7 +916,8 @@ class PlaylistsSyncCommand extends BaseCommand
 
     /**
      * Parses a comma-separated formats answer/value against VALID_FORMATS: trims each entry,
-     * drops empties, dedups, and rejects unknown names. Throws on an empty or invalid list so
+     * drops empties, dedups, and rejects unknown names. "all" (case-insensitive), alone or mixed
+     * with other entries, expands to every valid format. Throws on an empty or invalid list so
      * QuestionHelper re-asks (and non-interactive callers get a clear error). Pure — unit-testable.
      */
     public static function parseFormatsAnswer(?string $answer): string
@@ -880,6 +927,9 @@ class PlaylistsSyncCommand extends BaseCommand
             throw new RuntimeException(
                 'Expected a comma-separated list of formats ('.implode(', ', self::VALID_FORMATS)."), got: $answer"
             );
+        }
+        if (in_array('all', array_map('strtolower', $entries), true)) {
+            return implode(',', self::VALID_FORMATS);
         }
         $unknown = array_diff($entries, self::VALID_FORMATS);
         if ($unknown !== []) {
@@ -932,6 +982,42 @@ class PlaylistsSyncCommand extends BaseCommand
     }
 
     /**
+     * Parses input-file lines into ordered [url, alias] pairs. Blank lines and plain `#` comments
+     * are dropped with zero effect, exactly as before — existing files that use bare `#` lines as
+     * human-only section headers (e.g. "# DJ Sets" above a block of URLs) must never be
+     * reinterpreted. A comment matching `# alias: <name>` (case-insensitive "alias", colon
+     * required, name trimmed) attaches its name to the URL line directly following it — nothing
+     * (blank line, other comment) may sit in between; any intervening line clears the pending
+     * alias. Consecutive alias comments before one URL: last one wins. An alias marker whose name
+     * is empty after trimming is treated as no alias. Pure — unit-testable.
+     *
+     * @param list<string> $lines raw lines from file($inputFile), as returned (not yet trimmed)
+     * @return list<array{url: string, alias: ?string}>
+     */
+    public static function parseInputFileEntries(array $lines): array
+    {
+        $entries = [];
+        $pendingAlias = null;
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '') {
+                $pendingAlias = null;
+                continue;
+            }
+            if ($line[0] === '#') {
+                $pendingAlias = (preg_match('/^#\s*alias\s*:\s*(.*)$/i', $line, $m) === 1 && trim($m[1]) !== '')
+                    ? trim($m[1])
+                    : null;
+                continue;
+            }
+            $entries[] = ['url' => $line, 'alias' => $pendingAlias];
+            $pendingAlias = null;
+        }
+
+        return $entries;
+    }
+
+    /**
      * ProgressBar silently redirects to $output->getErrorOutput() for any ConsoleOutputInterface
      * (Symfony's built-in behaviour, so piping a command's real stdout output stays clean of
      * progress noise). On a real terminal stdout/stderr share one tty so this is invisible, but
@@ -979,6 +1065,26 @@ class PlaylistsSyncCommand extends BaseCommand
         $name = preg_replace('/\s+/', ' ', $name);
 
         return trim((string)$name);
+    }
+
+    /**
+     * Builds the .m3u8 path for one playlist × format, per --playlist-layout:
+     * "flat" (default): $playlistsDir/"$plFolder - $fmt.m3u8" — unchanged from before this option
+     * existed. "per-playlist": $playlistsDir/$plFolder/"$fmt.m3u8" — one directory per playlist,
+     * all requested formats inside. "per-format": $playlistsDir/$fmt/"$plFolder.m3u8" — one
+     * directory per format, all playlists of that format inside. Each subdirectory mode drops the
+     * redundant name component since the containing directory already encodes it (matches the
+     * existing library/{mp3,wav,flac}/<id> - <title>.<ext> convention). Pure — unit-testable.
+     */
+    private static function buildM3uPath(string $playlistsDir, string $layout, string $plFolder, string $fmt): string
+    {
+        $base = rtrim($playlistsDir, DIRECTORY_SEPARATOR);
+
+        return match ($layout) {
+            'per-playlist' => $base.DIRECTORY_SEPARATOR.$plFolder.DIRECTORY_SEPARATOR."$fmt.m3u8",
+            'per-format' => $base.DIRECTORY_SEPARATOR.$fmt.DIRECTORY_SEPARATOR."$plFolder.m3u8",
+            default => $base.DIRECTORY_SEPARATOR."$plFolder - $fmt.m3u8",
+        };
     }
 
     /** ODG value for display: "-1.5", "-0.2", "0". Pure — unit-testable. */

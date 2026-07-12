@@ -31,6 +31,59 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
     private string $configPath;
     private string $workDir;
 
+    public function testAliasCommentOverridesPlaylistFolderName(): void
+    {
+        file_put_contents(
+            $this->workDir.'/playlists.txt',
+            "# alias: My Chill Mix\nhttps://soundcloud.com/dj/sets/my-list\n"
+        );
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track One.info.json', '{"title":"Track One","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track One.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute($this->options(), ['interactive' => false]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertFileExists($this->workDir.'/out/playlists/My Chill Mix - mp3.m3u8');
+        self::assertFileDoesNotExist($this->workDir.'/out/playlists/DJ - My List - mp3.m3u8');
+    }
+
+    public function testAliasWithPerPlaylistLayoutCombineCorrectly(): void
+    {
+        file_put_contents(
+            $this->workDir.'/playlists.txt',
+            "# alias: My Chill Mix\nhttps://soundcloud.com/dj/sets/my-list\n"
+        );
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track One.info.json', '{"title":"Track One","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track One.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(
+            $this->options() + ['--playlist-layout' => 'per-playlist'],
+            ['interactive' => false]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertFileExists($this->workDir.'/out/playlists/My Chill Mix/mp3.m3u8');
+        self::assertFileExists($this->workDir.'/out/playlists/My Chill Mix/original.m3u8');
+    }
+
     public function testCliOverridesEnvAndConfig(): void
     {
         file_put_contents($this->configPath, json_encode(['min_odg' => -2, 'min_odg_mode' => 'filter']));
@@ -202,7 +255,29 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         self::assertFileDoesNotExist($this->workDir.'/out/playlists/DJ - My List - mp3.m3u8');
     }
 
-    public function testFormatsPromptSuppressedByConfigKey(): void
+    public function testFormatsCliValueSkipsPrompt(): void
+    {
+        file_put_contents($this->workDir.'/.env', "PAUSE_BETWEEN=0\n");
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n");
+        $tester = $this->makeTester($fake);
+
+        // --formats given explicitly: no formats input needed, only the (suppressed) min-odg
+        // prompts would otherwise fire
+        $exit = $tester->execute(
+            $this->options()
+            + ['--formats' => 'mp3', '--min-odg' => '-4', '--min-odg-mode' => 'warn'],
+            ['interactive' => true]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertStringNotContainsString('Output formats', $this->display($tester));
+        // CLI values are never persisted — only prompt answers are (matches --min-odg/env elsewhere)
+        self::assertArrayNotHasKey('formats', $this->savedConfig());
+    }
+
+    public function testFormatsPromptFiresEveryRunEvenWhenConfigured(): void
     {
         file_put_contents($this->workDir.'/.env', "PAUSE_BETWEEN=0\n");
         file_put_contents($this->configPath, json_encode(['formats' => 'mp3']));
@@ -211,22 +286,17 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
             ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n");
         $tester = $this->makeTester($fake);
 
-        // no formats input needed — only the (suppressed) min-odg prompts would otherwise fire
+        // formats is already configured ('mp3'), but the prompt still fires every run — a new
+        // answer overrides and re-persists it, proving it is not suppressed once configured
+        $tester->setInputs(['mp3,wav']);
         $exit = $tester->execute(
             $this->options() + ['--min-odg' => '-4', '--min-odg-mode' => 'warn'],
             ['interactive' => true]
         );
 
         self::assertSame(Command::SUCCESS, $exit);
-        self::assertSame('mp3', $this->savedConfig()['formats'] ?? null);
-    }
-
-    /**
-     * @return array<string, mixed>
-     */
-    private function savedConfig(): array
-    {
-        return json_decode((string)file_get_contents($this->configPath), true) ?? [];
+        self::assertStringContainsString('Output formats', $this->display($tester));
+        self::assertSame('mp3,wav', $this->savedConfig()['formats'] ?? null);
     }
 
     public function testFormatsPromptedWhenUnconfigured(): void
@@ -248,13 +318,16 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         self::assertSame(Command::SUCCESS, $exit);
         self::assertSame('mp3,wav', $this->savedConfig()['formats'] ?? null);
 
-        // second run: formats is configured — no prompt, no inputs needed
+        // second run: formats is now configured ('mp3,wav'), but the prompt still fires and a
+        // fresh answer overrides/re-persists it
         $tester2 = $this->makeTester((new FakeProcessRunner())->on("'-J'", 0, self::PLAYLIST_JSON));
+        $tester2->setInputs(['original']);
         $exit2 = $tester2->execute(
             $this->options() + ['--min-odg' => '-4', '--min-odg-mode' => 'warn'],
             ['interactive' => true]
         );
         self::assertSame(Command::SUCCESS, $exit2);
+        self::assertSame('original', $this->savedConfig()['formats'] ?? null);
     }
 
     public function testGenericCookiesUsedByBothTools(): void
@@ -381,7 +454,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         // save then writes them to the new config path. Empty answer = min-odg off.
         $tester->setInputs(['']);
         $exit = $tester->execute(
-            ['--playlists-dir' => $this->workDir.'/out/playlists'],
+            ['--playlists-dir' => $this->workDir.'/out/playlists', '--formats' => 'original,mp3'],
             ['interactive' => true]
         );
 
@@ -557,6 +630,36 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         self::assertStringNotContainsString('456 - Track Two', $m3u);
     }
 
+    public function testMinOdgFilterKeepsTrackWhoseDisplayedOdgMatchesThreshold(): void
+    {
+        // 127.97 kbps aac is a hair under the 128 kbps/-1.0 calibration anchor: it estimates to
+        // ~-1.0008, which rounds to the same "est. ODG -1" shown for the exact anchor and must
+        // not be treated as worse than a -1 threshold (see AudioConverter::isBelowMinOdg)
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents(
+            $originalDir.'/123 - Track One.info.json',
+            '{"title":"Track One","uploader":"DJ","abr":127.97,"acodec":"aac"}'
+        );
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(
+            $this->options() + ['--min-odg' => '-1', '--min-odg-mode' => 'filter'],
+            ['interactive' => false]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertStringNotContainsString('below est. ODG', $this->display($tester));
+        $m3u = (string)file_get_contents($this->workDir.'/out/playlists/DJ - My List - mp3.m3u8');
+        self::assertStringContainsString('123 - Track One.mp3', $m3u);
+    }
+
     public function testMinOdgFilterSkipsUnavailableFormatWithoutFailure(): void
     {
         $fake = (new FakeProcessRunner())
@@ -662,7 +765,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
 
         // tier 2 = Semi-Pro (ODG ≥ -1.0) + mode prompt (filter)
         $tester->setInputs(['2', 'filter']);
-        $exit = $tester->execute($this->options(), ['interactive' => true]);
+        $exit = $tester->execute($this->options() + ['--formats' => 'original,mp3'], ['interactive' => true]);
 
         self::assertSame(Command::SUCCESS, $exit);
         self::assertStringContainsString('Semi-Pro Performance Minimum', $this->display($tester));
@@ -677,7 +780,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
 
         // empty answer = off; no mode prompt may follow
         $tester->setInputs(['']);
-        $exit = $tester->execute($this->options(), ['interactive' => true]);
+        $exit = $tester->execute($this->options() + ['--formats' => 'original,mp3'], ['interactive' => true]);
 
         self::assertSame(Command::SUCCESS, $exit);
         $config = $this->savedConfig();
@@ -686,7 +789,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
 
         // second run: min_odg is configured (as off) — no prompt, no inputs needed
         $tester2 = $this->makeTester((new FakeProcessRunner())->on("'-J'", 0, self::PLAYLIST_JSON));
-        $exit2 = $tester2->execute($this->options(), ['interactive' => true]);
+        $exit2 = $tester2->execute($this->options() + ['--formats' => 'original,mp3'], ['interactive' => true]);
         self::assertSame(Command::SUCCESS, $exit2);
     }
 
@@ -716,7 +819,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
 
         // only the mode prompt fires (min-odg comes from env)
         $tester->setInputs(['warn']);
-        $exit = $tester->execute($this->options(), ['interactive' => true]);
+        $exit = $tester->execute($this->options() + ['--formats' => 'original,mp3'], ['interactive' => true]);
 
         self::assertSame(Command::SUCCESS, $exit);
         // env values are never persisted — only prompt answers are
@@ -733,7 +836,7 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
 
         // min-odg prompt (custom -1) + mode prompt (filter)
         $tester->setInputs(['-1', 'filter']);
-        $exit = $tester->execute($this->options(), ['interactive' => true]);
+        $exit = $tester->execute($this->options() + ['--formats' => 'original,mp3'], ['interactive' => true]);
 
         self::assertSame(Command::SUCCESS, $exit);
         self::assertTrue($fake->ran('acodec^=mp3][abr>=192]'));
@@ -1054,6 +1157,33 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         self::assertFalse($fake->ran("'--cookie-file' '$generic'"));
     }
 
+    public function testPlainCommentDirectlyAboveUrlHasNoEffectOnFolderName(): void
+    {
+        // Regression guard: config/playlists.txt uses plain "# Ciul"/"# Tek"-style comments
+        // directly above single URLs as human-only section headers — these must never be
+        // reinterpreted as aliases now that the "# alias: ..." marker exists.
+        file_put_contents(
+            $this->workDir.'/playlists.txt',
+            "# Ciul\nhttps://soundcloud.com/dj/sets/my-list\n"
+        );
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track One.info.json', '{"title":"Track One","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track One.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute($this->options(), ['interactive' => false]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertFileExists($this->workDir.'/out/playlists/DJ - My List - mp3.m3u8');
+    }
+
     public function testPlaylistFetchFailureIsReportedAndContinues(): void
     {
         $fake = (new FakeProcessRunner())->on("'-J'", 1, '');
@@ -1067,6 +1197,114 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         self::assertStringContainsString('The following playlists had errors:', $display);
         self::assertStringContainsString('All done.', $display);
         self::assertFalse($fake->ran('--download-archive'));
+    }
+
+    public function testPlaylistLayoutPerFormatGroupsAllPlaylistsInOneDirectory(): void
+    {
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track One.info.json', '{"title":"Track One","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track One.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(
+            $this->options() + ['--playlist-layout' => 'per-format'],
+            ['interactive' => false]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertFileExists($this->workDir.'/out/playlists/mp3/DJ - My List.m3u8');
+        self::assertFileExists($this->workDir.'/out/playlists/original/DJ - My List.m3u8');
+    }
+
+    public function testPlaylistLayoutPerPlaylistGroupsAllFormatsInOneDirectory(): void
+    {
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track One.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track One.info.json', '{"title":"Track One","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track One.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(
+            $this->options() + ['--playlist-layout' => 'per-playlist'],
+            ['interactive' => false]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $mp3Path = $this->workDir.'/out/playlists/DJ - My List/mp3.m3u8';
+        $originalPath = $this->workDir.'/out/playlists/DJ - My List/original.m3u8';
+        self::assertFileExists($mp3Path);
+        self::assertFileExists($originalPath);
+        // one directory level deeper than flat mode, so the relative track path gains an extra ../
+        self::assertStringContainsString(
+            '../../library/mp3/123 - Track One.mp3',
+            (string)file_get_contents($mp3Path)
+        );
+    }
+
+    public function testPlaylistLayoutPromptSuppressedByConfigKey(): void
+    {
+        file_put_contents($this->configPath, json_encode(['playlist_layout' => 'per-playlist']));
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n");
+        $tester = $this->makeTester($fake);
+
+        // no playlist-layout input needed — only the (suppressed) min-odg prompts would otherwise fire
+        $exit = $tester->execute(
+            $this->options() + ['--min-odg' => '-4', '--min-odg-mode' => 'warn'],
+            ['interactive' => true]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertSame('per-playlist', $this->savedConfig()['playlist_layout'] ?? null);
+    }
+
+    public function testPlaylistLayoutPromptedWhenUnconfigured(): void
+    {
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track One\nDONE:123\n");
+        $tester = $this->makeTester($fake);
+
+        // suppress the unrelated formats/min-odg prompts; only the playlist-layout prompt needs an input
+        $tester->setInputs(['per-format']);
+        $exit = $tester->execute(
+            $this->options() + ['--formats' => 'original,mp3', '--min-odg' => '-4', '--min-odg-mode' => 'warn'],
+            ['interactive' => true]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertSame('per-format', $this->savedConfig()['playlist_layout'] ?? null);
+
+        // second run: playlist_layout is configured — no prompt, no inputs needed
+        $tester2 = $this->makeTester((new FakeProcessRunner())->on("'-J'", 0, self::PLAYLIST_JSON));
+        $exit2 = $tester2->execute(
+            $this->options() + ['--formats' => 'original,mp3', '--min-odg' => '-4', '--min-odg-mode' => 'warn'],
+            ['interactive' => true]
+        );
+
+        self::assertSame(Command::SUCCESS, $exit2);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function savedConfig(): array
+    {
+        return json_decode((string)file_get_contents($this->configPath), true) ?? [];
     }
 
     public function testSpotdlCookiesEnvAppliesToSpotdlOnly(): void

@@ -132,9 +132,10 @@ default (see [Configuration & parameter resolution](#configuration--parameter-re
 | Input file           | `--input` / `-i`          | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
 | Output dir           | `--out` / `-o`            | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
 | M3U8 dir             | `--playlists-dir`         | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
+| Playlist layout      | `--playlist-layout`       | `PLAYLIST_LAYOUT`       | `playlist_layout`       | when unresolved, every interactive run                                     | `flat`                                         |
 | Min est. ODG         | `--min-odg`               | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
 | Min ODG mode         | `--min-odg-mode`          | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
-| Formats              | `--formats`               | `FORMATS`               | `formats`               | when unresolved, every interactive run                                     | `original,mp3,wav,flac`                        |
+| Formats              | `--formats`               | `FORMATS`               | `formats`               | every interactive run unless `--formats` is given                          | `original,mp3,wav,flac`                        |
 | MP3 mode             | `--mp3-mode`              | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
 | MP3 bitrate (CBR)    | `--mp3-bitrate`           | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
 | MP3 quality (VBR)    | `--mp3-quality`           | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
@@ -173,7 +174,7 @@ YTDLP_BIN=/usr/local/bin/yt-dlp
 FFMPEG_BIN=ffmpeg
 FFPROBE_BIN=ffprobe             # used to detect source sample rate for resampling
 
-# Formats: original, mp3, wav, flac (comma-separated)
+# Formats: original, mp3, wav, flac (comma-separated), or "all" for every format
 FORMATS=original,mp3,wav,flac
 
 MP3_MODE=cbr                    # cbr (default) or vbr — some DJ software misreports VBR MP3 bitrate
@@ -192,6 +193,7 @@ SPOTDL_BIN=spotdl
 # LIBRARY_DIR=./downloads/library
 # ARCHIVE_DIR=./downloads/.archive
 # PLAYLISTS_DIR=./downloads/playlists
+# PLAYLIST_LAYOUT=flat            # flat (default), per-playlist, or per-format
 
 EXTRACTOR_RETRIES=10
 RETRY_SLEEP=exp=2:10:120
@@ -201,6 +203,10 @@ PAUSE_BETWEEN=2
 ```
 
 ### Output layout
+
+`--playlist-layout` (`PLAYLIST_LAYOUT` / `playlist_layout`) controls how the `playlists/` directory is organized.
+Default is `flat` (unchanged from before this option existed). Like `--formats`, it's prompted once interactively
+when unset anywhere, then the answer is persisted and never asked again:
 
 ```
 downloads/
@@ -213,12 +219,47 @@ downloads/
       <id> - <title>.jpg
     mp3/  wav/  flac/
       <id> - <title>.<ext>
-  playlists/
+  playlists/                  ← flat (default)
     <Uploader> - <Playlist Title> - original.m3u8
     <Uploader> - <Playlist Title> - mp3.m3u8
     <Uploader> - <Playlist Title> - wav.m3u8
     <Uploader> - <Playlist Title> - flac.m3u8
 ```
+
+`per-playlist` groups every requested format for one playlist together:
+
+```
+  playlists/
+    <Uploader> - <Playlist Title>/
+      original.m3u8
+      mp3.m3u8
+      wav.m3u8
+      flac.m3u8
+```
+
+`per-format` groups every playlist of one format together:
+
+```
+  playlists/
+    mp3/
+      <Uploader> - <Playlist Title>.m3u8
+    wav/
+      <Uploader> - <Playlist Title>.m3u8
+```
+
+### Playlist aliases
+
+By default a playlist's name (used for its `.m3u8` file(s)) is auto-derived as `<Uploader> - <Playlist Title>` from
+the source API. Override it by placing a `# alias: <name>` comment directly above that playlist's URL in the input
+file — nothing (blank line, other comment) may sit in between, and it only applies to the very next URL:
+
+```
+# alias: My Chill Mix
+https://soundcloud.com/stefan-ripper/sets/tek
+```
+
+Plain `#` comments (no `alias:` marker) are unaffected and keep working exactly as before — purely human-readable
+notes with no effect on naming, e.g. the section headers already used in `config/playlists.txt`.
 
 ### Rekordbox import
 

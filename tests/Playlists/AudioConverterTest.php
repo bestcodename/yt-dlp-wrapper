@@ -115,6 +115,25 @@ final class AudioConverterTest extends TestCase
     /**
      * @return array<string, array{float, float, bool}>
      */
+    public static function isBelowMinOdgProvider(): array
+    {
+        return [
+            'exact anchor match at threshold is not below' => [-1.0, -1.0, false],
+            'real-world bitrate a hair under a nominal anchor still displays as the threshold' => [
+                -1.0008,
+                -1.0,
+                false,
+            ],
+            'clearly worse than threshold is below' => [-1.05, -1.0, true],
+            'clearly better than threshold is not below' => [-0.9, -1.0, false],
+            'both sides carry the same sub-cent noise' => [-1.001, -1.001, false],
+            'off by a full cent is still below' => [-1.006, -1.0, true],
+        ];
+    }
+
+    /**
+     * @return array<string, array{float, float, bool}>
+     */
     public static function isBitrateMismatchProvider(): array
     {
         return [
@@ -483,6 +502,12 @@ final class AudioConverterTest extends TestCase
     public function testEstimateOdg(?string $acodec, float $kbps, float $expected): void
     {
         self::assertEqualsWithDelta($expected, AudioConverter::estimateOdg($acodec, $kbps), 0.0001);
+    }
+
+    #[DataProvider('isBelowMinOdgProvider')]
+    public function testIsBelowMinOdg(float $odg, float $minOdg, bool $expected): void
+    {
+        self::assertSame($expected, AudioConverter::isBelowMinOdg($odg, $minOdg));
     }
 
     #[DataProvider('isBitrateMismatchProvider')]

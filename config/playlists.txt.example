@@ -4,11 +4,17 @@
 # SoundCloud/Spotify/YouTube playlist (or "likes") URLs. One URL per line; blank lines and
 # `#`-prefixed comment lines (e.g. section headers) are ignored.
 # Spotify URLs are downloaded via spotdl (YouTube Music matching), everything else via yt-dlp.
+# A "# alias: <name>" comment directly above one URL (nothing in between) overrides that
+# playlist's auto-derived "<Uploader> - <Title>" name used for its .m3u8 file(s); plain `#`
+# comments (no "alias:" marker) have no effect and keep working as before.
 
 # Example section
 https://soundcloud.com/example-user/sets/example-playlist
 https://www.youtube.com/playlist?list=EXAMPLE_PLAYLIST_ID
 https://open.spotify.com/playlist/EXAMPLE_PLAYLIST_ID
+
+# alias: My Chill Mix
+https://open.spotify.com/playlist/EXAMPLE_ALIASED_PLAYLIST_ID
 
 # Likes (large)
 https://soundcloud.com/example-user/likes

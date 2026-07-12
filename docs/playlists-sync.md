@@ -133,6 +133,13 @@ ddev exec bin/console playlists:sync \
   --playlists-dir downloads/playlists
 ```
 
+### Grouping playlist files by directory
+
+```bash
+ddev exec bin/console playlists:sync --playlist-layout per-playlist
+ddev exec bin/console playlists:sync --playlist-layout per-format
+```
+
 ### Show full help
 
 ```bash
@@ -156,9 +163,10 @@ default (see [Parameter resolution](#parameter-resolution)).
 | Input file           | `--input` / `-i`                                   | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
 | Output dir           | `--out` / `-o`                                     | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
 | M3U8 dir             | `--playlists-dir`                                  | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
+| Playlist layout      | `--playlist-layout`                                | `PLAYLIST_LAYOUT`       | `playlist_layout`       | when unresolved, every interactive run                                     | `flat`                                         |
 | Min est. ODG         | `--min-odg`                                        | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
 | Min ODG mode         | `--min-odg-mode`                                   | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
-| Formats              | `--formats`                                        | `FORMATS`               | `formats`               | when unresolved, every interactive run                                     | `original,mp3,wav,flac`                        |
+| Formats              | `--formats`                                        | `FORMATS`               | `formats`               | every interactive run unless `--formats` is given                          | `original,mp3,wav,flac`                        |
 | MP3 mode             | `--mp3-mode`                                       | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
 | MP3 bitrate (CBR)    | `--mp3-bitrate`                                    | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
 | MP3 quality (VBR)    | `--mp3-quality`                                    | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
@@ -202,7 +210,7 @@ YTDLP_BIN=/usr/local/bin/yt-dlp
 FFMPEG_BIN=ffmpeg
 FFPROBE_BIN=ffprobe             # detects source sample rate for resampling
 
-# Formats: any of original, mp3, wav, flac (comma-separated)
+# Formats: any of original, mp3, wav, flac (comma-separated), or "all" for every format
 FORMATS=original,mp3,wav,flac
 
 # MP3 encoding: cbr (default) or vbr. CBR is used by default because some DJ software (e.g.
@@ -237,6 +245,7 @@ SPOTDL_BIN=spotdl
 
 # Where .m3u8 files go (default: OUTPUT_DIR/playlists)
 # PLAYLISTS_DIR=./downloads/playlists
+# PLAYLIST_LAYOUT=flat            # flat (default), per-playlist, or per-format — see "Output layout"
 
 # Rate limiting and retry behaviour
 EXTRACTOR_RETRIES=10
@@ -282,7 +291,7 @@ downloads/
       <id> - <title>.wav
     flac/
       <id> - <title>.flac
-  playlists/
+  playlists/                       ← flat layout (default, --playlist-layout=flat)
     <Uploader> - <Playlist Title> - original.m3u8
     <Uploader> - <Playlist Title> - mp3.m3u8
     <Uploader> - <Playlist Title> - wav.m3u8
@@ -292,6 +301,58 @@ downloads/
 `original` is a real output format like the others: including it in `FORMATS` writes a playlist referencing the
 untouched downloaded files (whatever container yt-dlp/spotdl produced — `.m4a`, `.webm`, `.opus`, ...) alongside
 whichever converted formats are also requested.
+
+`--playlist-layout` (`PLAYLIST_LAYOUT` / `playlist_layout`) changes how `playlists/` is organized, resolved
+CLI → env → config → default (`flat`). Prompted once, interactively, when it isn't set via any of those — like
+`--formats`, the answer is then persisted to `config/playlists-sync.json` and never asked again unless that key is
+removed:
+
+- `per-playlist` — one directory per playlist, holding every requested format for it:
+  ```
+  playlists/
+    <Uploader> - <Playlist Title>/
+      original.m3u8
+      mp3.m3u8
+      wav.m3u8
+      flac.m3u8
+  ```
+- `per-format` — one directory per format, holding every playlist of that format:
+  ```
+  playlists/
+    mp3/
+      <Uploader> - <Playlist Title>.m3u8
+    wav/
+      <Uploader> - <Playlist Title>.m3u8
+  ```
+
+Switching `--playlist-layout` between runs does not move or delete files already written under the old layout — it
+only affects where new `.m3u8` files land.
+
+## Playlist aliases
+
+By default a playlist's name — used to build its `.m3u8` filename(s) — is auto-derived as
+`<Uploader> - <Playlist Title>` from the source API (yt-dlp/spotdl). To override it, place a comment matching
+`# alias: <name>` directly above that playlist's URL in the input file:
+
+```
+# alias: My Chill Mix
+https://soundcloud.com/stefan-ripper/sets/tek
+```
+
+Rules:
+
+- The alias comment must be the line **directly above** the URL — a blank line or any other comment in between
+  clears it, and it applies to that one following URL only.
+- Matching is case-insensitive on `alias` (`# ALIAS: ...`, `#alias:...` also work); the name after the colon is
+  trimmed.
+- Two alias comments stacked directly above one URL: the last one wins.
+- An `# alias:` line with nothing after the colon is ignored (no alias).
+- **Plain `#` comments with no `alias:` marker are completely unaffected** — they continue to be silently stripped
+  as human-only notes, exactly as before this feature existed. This matters if you already use bare `#` lines as
+  section headers in your input file (e.g. `# DJ Sets` above a block of URLs): none of those are reinterpreted.
+
+There is no collision detection: two playlists (via alias or auto-derived name) resolving to the same name will
+silently overwrite each other's `.m3u8` file(s) — pick distinct aliases.
 
 ## Download summary
 

@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-12
+
+### Added
+
+- `playlists:sync` — new `--playlist-layout` / `PLAYLIST_LAYOUT` / `playlist_layout` option controlling how `.m3u8`
+  files are organized under the playlists directory: `flat` (default, unchanged), `per-playlist` (one subdirectory
+  per playlist containing all requested formats), or `per-format` (one subdirectory per format containing all
+  playlists of that format). It's prompted once interactively when unset anywhere and the answer is then persisted
+  to `config/playlists-sync.json`
+
+### Added
+
+- `playlists:sync` — `--formats`/`FORMATS`/`formats` accept `all` (case-insensitive) as shorthand for every output
+  format (`original,mp3,wav,flac`), usable alone or mixed in with other entries
+
+### Changed
+
+- `playlists:sync` — `--formats` is now prompted on every interactive run, even when already set via env or config,
+  so the format selection can be changed without editing `config/playlists-sync.json` by hand. Passing `--formats`
+  explicitly still skips the prompt (and, as before, CLI values are never persisted — only prompt answers are)
+
+### Fixed
+
+- `playlists:sync` — `--min-odg` no longer filters/warns about tracks whose displayed "est. ODG" exactly matches the
+  configured threshold. A real-world bitrate a hair under a nominal calibration anchor (e.g. a 128 kbps AAC stream
+  actually measured at 127.97 kbps) estimated to an ODG like `-1.0008`, which rounds to the same `-1` shown for the
+  exact anchor but was still being compared at full float precision — silently filtering tracks that looked
+  identical to the threshold and contradicting the documented inclusive "ODG ≥ min" semantics (`MIN_ODG_TIERS`). The
+  comparison (`AudioConverter::isBelowMinOdg`) now rounds both sides to the same 2-decimal precision as the display
+
+## [0.8.0] - 2026-07-12
+
+### Added
+
+- `playlists:sync` — support for user-defined playlist aliases: a `# alias: <name>` comment placed directly above a
+  playlist URL in the input file overrides the auto-derived `<uploader> - <title>` name used for that playlist's
+  `.m3u8` file(s). Plain `#` comments (with no `alias:` marker) are unaffected and continue to be silently ignored,
+  exactly as before
+
 ## [0.7.0] - 2026-07-12
 
 ### Added

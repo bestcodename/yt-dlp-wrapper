@@ -146,6 +146,21 @@ final class AudioConverter
     }
 
     /**
+     * Whether an estimated ODG counts as below a configured minimum, for the --min-odg warn/filter
+     * decision. Compares at the same 2-decimal precision as formatOdg()'s display (and the
+     * calibration anchors, which are all exact at 1-2 decimals): a real-world bitrate a hair below
+     * a nominal anchor (e.g. a 128 kbps AAC stream actually measured at 127.97 kbps) estimates to
+     * an ODG like -1.0008 which is genuinely `< -1.0` yet is indistinguishable from the threshold
+     * once rounded for display — without rounding first, such tracks get silently filtered even
+     * though they visibly show "est. ODG -1" against a "-1.0" threshold, contradicting the
+     * documented inclusive "ODG ≥ min" semantics (see MIN_ODG_TIERS). Pure — unit-testable.
+     */
+    public static function isBelowMinOdg(float $odg, float $minOdg): bool
+    {
+        return round($odg, 2) < round($minOdg, 2);
+    }
+
+    /**
      * Inverse of estimateOdg for one codec family: the lowest bitrate whose estimated ODG
      * reaches the threshold, rounded up to 0.1 kbps so rounding never admits worse quality.
      * Null when the codec cannot reach the threshold at any bitrate (fail-closed: its
