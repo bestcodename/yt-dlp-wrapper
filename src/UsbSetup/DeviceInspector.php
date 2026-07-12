@@ -55,20 +55,11 @@ final class DeviceInspector
         SymfonyStyle $io,
         ?string $savedDevice = null,
         string $prompt = 'Target device',
-        ?string $excludeDevice = null,
+        string|array|null $excludeDevice = null,
     ): ?string {
-        [$exit, $json] = $this->runCmd('lsblk -J -d -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL 2>/dev/null');
-        $devices = [];
-        if ($exit === 0 && trim($json) !== '') {
-            $data = json_decode($json, true);
-            foreach ($data['blockdevices'] ?? [] as $dev) {
-                if (($dev['type'] ?? '') === 'disk') {
-                    $devices[] = $dev;
-                }
-            }
-        }
+        $disks = $this->listDisks();
 
-        if (empty($devices)) {
+        if (empty($disks)) {
             $savedHint = $savedDevice ? " [<info>$savedDevice</info>]" : '';
             $q = new Question(
                 "<question>$prompt (e.g. /dev/sdb):</question>".$savedHint.' ',
@@ -80,24 +71,11 @@ final class DeviceInspector
             return $this->rejectExcludedDevice($answer, $excludeDevice, $io);
         }
 
-        $choices = [];
-        $deviceMap = [];
+        ['choices' => $choices, 'map' => $deviceMap] = $this->buildDeviceChoiceMap($disks, $excludeDevice);
         $defaultIdx = 0;
-        foreach ($devices as $dev) {
-            $path = '/dev/'.$dev['name'];
-            if ($excludeDevice !== null && $path === $excludeDevice) {
-                continue;
-            }
-            $parts = array_filter([
-                $dev['tran'] ?? '',
-                trim((string)($dev['vendor'] ?? '')),
-                trim((string)($dev['model'] ?? '')),
-            ]);
-            $label = sprintf('/dev/%-12s  %6s  %s', $dev['name'], $dev['size'], implode(' ', $parts));
-            $choices[] = $label;
-            $deviceMap[$label] = $path;
-            if ($savedDevice !== null && $path === $savedDevice) {
-                $defaultIdx = count($choices) - 1;
+        foreach ($choices as $idx => $label) {
+            if ($savedDevice !== null && ($deviceMap[$label] ?? null) === $savedDevice) {
+                $defaultIdx = $idx;
             }
         }
         $choices[] = 'Enter path manually';
@@ -119,20 +97,191 @@ final class DeviceInspector
         return $deviceMap[$chosen];
     }
 
+    /**
+     * Enumerates detected top-level disks via lsblk. Pure enumeration — no exclusion/labelling.
+     */
+    private function listDisks(): array
+    {
+        [$exit, $json] = $this->runCmd('lsblk -J -d -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL 2>/dev/null');
+        $disks = [];
+        if ($exit === 0 && trim($json) !== '') {
+            $data = json_decode($json, true);
+            foreach ($data['blockdevices'] ?? [] as $dev) {
+                if (($dev['type'] ?? '') === 'disk') {
+                    $disks[] = $dev;
+                }
+            }
+        }
+
+        return $disks;
+    }
+
     private function runCmd(string $cmd): array
     {
         return $this->runner->run($cmd);
     }
 
-    public function rejectExcludedDevice(?string $device, ?string $excludeDevice, SymfonyStyle $io): ?string
+    public function rejectExcludedDevice(?string $device, string|array|null $excludeDevice, SymfonyStyle $io): ?string
     {
-        if ($device !== null && $excludeDevice !== null && $device === $excludeDevice) {
+        if ($device !== null && in_array($device, self::normalizeExcludeSet($excludeDevice), true)) {
             $io->error('Source and target must be different devices.');
 
             return null;
         }
 
         return $device;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function normalizeExcludeSet(string|array|null $excludeDevices): array
+    {
+        if ($excludeDevices === null) {
+            return [];
+        }
+
+        return is_array($excludeDevices) ? array_values($excludeDevices) : [$excludeDevices];
+    }
+
+    /**
+     * Builds the ChoiceQuestion label list and label→path map for a set of lsblk disk entries,
+     * omitting any device in $excludeDevices.
+     *
+     * @return array{choices: list<string>, map: array<string, string>}
+     */
+    private function buildDeviceChoiceMap(array $disks, string|array|null $excludeDevices): array
+    {
+        $exclude = self::normalizeExcludeSet($excludeDevices);
+        $choices = [];
+        $deviceMap = [];
+        foreach ($disks as $dev) {
+            $path = '/dev/'.$dev['name'];
+            if (in_array($path, $exclude, true)) {
+                continue;
+            }
+            $parts = array_filter([
+                $dev['tran'] ?? '',
+                trim((string)($dev['vendor'] ?? '')),
+                trim((string)($dev['model'] ?? '')),
+            ]);
+            $label = sprintf('/dev/%-12s  %6s  %s', $dev['name'], $dev['size'], implode(' ', $parts));
+            $choices[] = $label;
+            $deviceMap[$label] = $path;
+        }
+
+        return ['choices' => $choices, 'map' => $deviceMap];
+    }
+
+    /**
+     * Multi-select variant of promptForDevice(): lists the same detected disks but lets the user
+     * pick several at once (Ventoy-stick batch provisioning). Returns the chosen device paths, or
+     * [] when the user aborted (blank manual entry) or entered an excluded device.
+     *
+     * @param ?list<string> $savedDevices pre-selected choices (multi-select default)
+     * @param list<string> $excludeDevices devices to omit from the list (e.g. the duplicate-mode source)
+     * @return list<string>
+     */
+    public function promptForDevices(
+        InputInterface $input,
+        OutputInterface $output,
+        QuestionHelper $helper,
+        SymfonyStyle $io,
+        ?array $savedDevices = null,
+        string $prompt = 'Target devices',
+        array $excludeDevices = [],
+    ): array {
+        $disks = $this->listDisks();
+
+        if (empty($disks)) {
+            $savedHint = $savedDevices ? ' [<info>'.implode(',', $savedDevices).'</info>]' : '';
+            $q = new Question(
+                "<question>$prompt (comma-separated, e.g. /dev/sdb,/dev/sdc):</question>".$savedHint.' ',
+                $savedDevices !== null ? implode(',', $savedDevices) : null
+            );
+            $answer = $helper->ask($input, $output, $q);
+
+            return $this->rejectExcludedDevices(self::parseDeviceList($answer), $excludeDevices, $io);
+        }
+
+        ['choices' => $choices, 'map' => $deviceMap] = $this->buildDeviceChoiceMap($disks, $excludeDevices);
+        $manualLabel = 'Enter path manually';
+        $choices[] = $manualLabel;
+
+        $defaultIndices = [];
+        foreach ($choices as $idx => $label) {
+            if ($savedDevices !== null && in_array($deviceMap[$label] ?? null, $savedDevices, true)) {
+                $defaultIndices[] = $idx;
+            }
+        }
+        $default = $defaultIndices !== [] ? implode(',', $defaultIndices) : null;
+
+        $q = new ChoiceQuestion("<question>$prompt (comma-separated):</question>", $choices, $default);
+        $q->setMultiselect(true);
+        $chosen = (array)$helper->ask($input, $output, $q);
+
+        $devices = [];
+        $askManually = false;
+        foreach ($chosen as $label) {
+            if ($label === $manualLabel) {
+                $askManually = true;
+                continue;
+            }
+            $devices[] = $deviceMap[$label];
+        }
+
+        if ($askManually) {
+            $q = new Question('<question>Device path(s), comma-separated (e.g. /dev/sdb,/dev/sdc):</question> ');
+            $answer = $helper->ask($input, $output, $q);
+            $devices = array_merge($devices, self::parseDeviceList($answer));
+        }
+
+        return $this->rejectExcludedDevices(array_values(array_unique($devices)), $excludeDevices, $io);
+    }
+
+    /**
+     * Multi-device counterpart of rejectExcludedDevice(): rejects the whole list (returns [])
+     * if any entry collides with an excluded device, mirroring the single-device fail-fast
+     * behavior rather than silently dropping just the offending entry.
+     *
+     * @param list<string> $devices
+     * @param list<string> $excludeDevices
+     * @return list<string>
+     */
+    public function rejectExcludedDevices(array $devices, array $excludeDevices, SymfonyStyle $io): array
+    {
+        foreach ($devices as $device) {
+            if (in_array($device, $excludeDevices, true)) {
+                $io->error('Source and target must be different devices.');
+
+                return [];
+            }
+        }
+
+        return $devices;
+    }
+
+    /**
+     * Splits a comma-separated device-path answer into a trimmed, trailing-slash-free list.
+     * Pure — unit-testable.
+     *
+     * @return list<string>
+     */
+    public static function parseDeviceList(?string $answer): array
+    {
+        if ($answer === null || trim($answer) === '') {
+            return [];
+        }
+
+        return array_values(
+            array_filter(
+                array_map(
+                    static fn(string $d): string => rtrim(trim($d), '/'),
+                    explode(',', $answer)
+                ),
+                static fn(string $d): bool => $d !== ''
+            )
+        );
     }
 
     /**

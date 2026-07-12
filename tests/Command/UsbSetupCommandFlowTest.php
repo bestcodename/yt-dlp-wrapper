@@ -26,6 +26,9 @@ final class UsbSetupCommandFlowTest extends TestCase
 {
     private const LSBLK_NO_VENTOY = '{"blockdevices":[{"name":"null","size":"14.9G","type":"disk","tran":"usb",'
     .'"vendor":"FakeVend","model":"FakeModel","children":[{"name":"null1","type":"part"}]}]}';
+    private const LSBLK_TWO_DISKS = '{"blockdevices":[{"name":"null","size":"14.9G","type":"disk","tran":"usb",'
+    .'"vendor":"FakeVend","model":"FakeModel"},{"name":"zero","size":"32G","type":"disk","tran":"usb",'
+    .'"vendor":"OtherVend","model":"OtherModel"}]}';
     private const LSBLK_VENTOY = '{"blockdevices":[{"name":"null","size":"14.9G","type":"disk","tran":"usb",'
     .'"vendor":"FakeVend","model":"FakeModel","children":[{"name":"null1","type":"part"},'
     .'{"name":"null2","type":"part"}]}]}';
@@ -93,14 +96,14 @@ final class UsbSetupCommandFlowTest extends TestCase
             $display = $this->display($tester);
             self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
             self::assertStringNotContainsString('Data partition mirrored.', $display); // not duplicate mode
-            self::assertStringContainsString('USB stick is ready.', $display);
+            self::assertStringContainsString('USB stick(s) ready.', $display);
             self::assertStringContainsString('1 software installer(s) copied to /software/', $display);
             self::assertTrue($fake->ran('cp --no-preserve=all '.escapeshellarg($iso)));
             self::assertTrue($fake->ran('fallocate'));
             self::assertTrue($fake->ran('mkfs.ext4'));
             self::assertTrue($fake->ran('cp --no-preserve=all '.escapeshellarg($softwareFile)));
 
-            $mount = sys_get_temp_dir().'/usb_setup_'.getmypid();
+            $mount = sys_get_temp_dir().'/usb_setup_'.getmypid().'_dst_null';
             self::assertFileExists($mount.'/ventoy/ventoy.json');
             $ventoyJson = json_decode((string)file_get_contents($mount.'/ventoy/ventoy.json'), true);
             self::assertSame('/'.basename($iso), $ventoyJson['persistence'][0]['image'] ?? null);
@@ -136,17 +139,23 @@ final class UsbSetupCommandFlowTest extends TestCase
         return (string)preg_replace('/\s+/', ' ', $tester->getDisplay());
     }
 
+    private static function cleanupMountPoints(): void
+    {
+        foreach (['', '_src', '_dst_null', '_dst_zero', '_dst_urandom'] as $suffix) {
+            self::rmrfMountSuffix($suffix);
+        }
+        self::rmrf(sys_get_temp_dir().'/persist_'.getmypid());
+    }
+
     /**
      * usb_setup_<pid>[_suffix] mount points are deterministic (PartitionFormatter::mount ties
      * them to getmypid(), not a per-call unique id), so any test that actually writes real
      * content into the mount block must clean up afterwards or it leaks into the next test that
      * mounts to the same path within this process.
      */
-    private static function cleanupMountPoints(): void
+    private static function rmrfMountSuffix(string $suffix): void
     {
-        self::rmrf(sys_get_temp_dir().'/usb_setup_'.getmypid());
-        self::rmrf(sys_get_temp_dir().'/usb_setup_'.getmypid().'_src');
-        self::rmrf(sys_get_temp_dir().'/persist_'.getmypid());
+        self::rmrf(sys_get_temp_dir().'/usb_setup_'.getmypid().$suffix);
     }
 
     private static function rmrf(string $dir): void
@@ -194,11 +203,26 @@ final class UsbSetupCommandFlowTest extends TestCase
         }
     }
 
+    public function testDeviceListRejectsDuplicateEntry(): void
+    {
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(['--device' => '/dev/null,/dev/null'], ['interactive' => false]);
+
+        self::assertSame(Command::FAILURE, $exit);
+        self::assertStringContainsString(
+            'Duplicate device(s) in --device / USB_DEVICE: /dev/null',
+            $this->display($tester)
+        );
+        self::assertFalse($fake->ran('mount '));
+    }
+
     public function testDeviceNameMismatchDeclinedAborts(): void
     {
         file_put_contents(
             $this->configPath,
-            json_encode(['device' => '/dev/null', 'device_name' => 'usb OldVendor OldModel'])."\n"
+            json_encode(['dev_null_device' => '/dev/null', 'dev_null_device_name' => 'usb OldVendor OldModel'])."\n"
         );
         $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
 
@@ -213,7 +237,7 @@ final class UsbSetupCommandFlowTest extends TestCase
     {
         file_put_contents(
             $this->configPath,
-            json_encode(['device' => '/dev/null', 'device_name' => 'usb OldVendor OldModel'])."\n"
+            json_encode(['dev_null_device' => '/dev/null', 'dev_null_device_name' => 'usb OldVendor OldModel'])."\n"
         );
         $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
 
@@ -225,7 +249,7 @@ final class UsbSetupCommandFlowTest extends TestCase
         $display = $this->display($tester);
         self::assertStringContainsString('now shows as "usb FakeVend FakeModel"', $display);
         self::assertStringContainsString('was "usb OldVendor OldModel" last time', $display);
-        self::assertSame('usb FakeVend FakeModel', $this->savedConfig()['device_name'] ?? null);
+        self::assertSame('usb FakeVend FakeModel', $this->savedConfig()['dev_null_device_name'] ?? null);
     }
 
     private function savedConfig(): array
@@ -245,8 +269,8 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertSame(Command::SUCCESS, $exit);
         $config = $this->savedConfig();
         // device_name is written mid-run; the final batched save must merge, not clobber it
-        self::assertSame('usb FakeVend FakeModel', $config['device_name'] ?? null);
-        self::assertSame('/dev/null', $config['device'] ?? null);
+        self::assertSame('usb FakeVend FakeModel', $config['dev_null_device_name'] ?? null);
+        self::assertSame(['/dev/null'], $config['devices'] ?? null);
         self::assertFalse($config['install_ventoy'] ?? null);
         self::assertSame('configuration', $config['payload_source'] ?? null);
         self::assertArrayHasKey('persistence_mib', $config);
@@ -353,7 +377,7 @@ final class UsbSetupCommandFlowTest extends TestCase
             $display = $this->display($tester);
             self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
             self::assertStringContainsString('Data partition mirrored.', $display);
-            self::assertStringContainsString('USB stick is ready.', $display);
+            self::assertStringContainsString('USB stick(s) ready.', $display);
             self::assertStringContainsString('Payload duplicated from /dev/zero.', $display);
             self::assertTrue($fake->ran('rsync -rt'));
             self::assertFalse($fake->ran('--dry-run')); // scratch mode: no delete pass needed
@@ -406,7 +430,37 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertSame(Command::SUCCESS, $exit);
         $display = $this->display($tester);
         self::assertStringNotContainsString('--device is required', $display);
-        self::assertSame('/dev/null', $this->savedConfig()['device'] ?? null);
+        self::assertSame(['/dev/null'], $this->savedConfig()['devices'] ?? null);
+    }
+
+    public function testInteractiveMultiSelectDevicePromptWhenOptionOmitted(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY)->on('lsblk -J -d', 0, self::LSBLK_TWO_DISKS);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1', '/dev/zero1'];
+
+        // multiselect device prompt (both disks), scratch mode, skip Ventoy, payload default,
+        // ISO skip, no downloads, 2x wipe confirm
+        $tester->setInputs(['0,1', '1', '1', '', '2', '-', 'yes', 'yes']);
+        $exit = $tester->execute([], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertSame(['/dev/null', '/dev/zero'], $this->savedConfig()['devices'] ?? null);
+    }
+
+    public function testInvalidDeviceAmongMultipleFailsWholeRunBeforeAnyWrite(): void
+    {
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute(['--device' => '/dev/null,/dev/does-not-exist'], ['interactive' => false]);
+
+        self::assertSame(Command::FAILURE, $exit);
+        self::assertStringContainsString('Device not found: /dev/does-not-exist', $this->display($tester));
+        self::assertFalse($fake->ran('mount '));
+        self::assertFalse($fake->ran('mkfs.fat'));
+        self::assertFalse($fake->ran('bash ./'));
     }
 
     public function testInvalidIsoVariantFails(): void
@@ -423,6 +477,21 @@ final class UsbSetupCommandFlowTest extends TestCase
             'Invalid --iso-variant / USB_ISO_VARIANT value: bogus',
             $this->display($tester)
         );
+    }
+
+    public function testLegacySingularDeviceConfigUsedAsDevicesPromptDefault(): void
+    {
+        file_put_contents($this->configPath, json_encode(['device' => '/dev/null'])."\n");
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        // blank answer accepts the legacy single `device` as the free-text default (no lsblk -d
+        // stub => falls back to free-text entry), then mode default (update, Ventoy detected),
+        // skip Ventoy, payload default, ISO skip, no downloads, single update confirm
+        $tester->setInputs(['', '', '1', '', '2', '-', 'yes']);
+        $exit = $tester->execute([], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertSame(['/dev/null'], $this->savedConfig()['devices'] ?? null);
     }
 
     /**
@@ -447,9 +516,101 @@ final class UsbSetupCommandFlowTest extends TestCase
         $display = $this->display($tester);
         self::assertStringContainsString($expectedMode, $display);
         if ($expectedMode === 'redo from scratch') {
-            self::assertStringContainsString('ALL DATA ON /dev/null WILL BE ERASED', $display);
+            self::assertStringContainsString('ALL DATA ON THE FOLLOWING DEVICE(S) WILL BE ERASED: /dev/null', $display);
         } else {
             self::assertStringContainsString('USB Setup — Update Summary', $display);
+        }
+    }
+
+    public function testMultipleDevicesConfigurationPathCopiesIsoOntoEachDevice(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $iso = tempnam(sys_get_temp_dir(), 'usb_setup_flow_iso_').'.iso';
+        file_put_contents($iso, 'fake-iso-bytes');
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1', '/dev/zero1'];
+
+        try {
+            // scratch mode, skip Ventoy, payload default, ISO local path, persistence,
+            // no downloads, 2x wipe confirm
+            $tester->setInputs(['1', '1', '', '1', $iso, '64', '-', 'yes', 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null,/dev/zero'], ['interactive' => true]);
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString('USB stick(s) ready.', $display);
+            self::assertSame(2, substr_count($display, 'Partition 1 formatted as FAT32.'));
+
+            $mountNull = sys_get_temp_dir().'/usb_setup_'.getmypid().'_dst_null';
+            $mountZero = sys_get_temp_dir().'/usb_setup_'.getmypid().'_dst_zero';
+            self::assertFileExists($mountNull.'/ventoy/ventoy.json');
+            self::assertFileExists($mountZero.'/ventoy/ventoy.json');
+            self::assertSame(['/dev/null', '/dev/zero'], $this->savedConfig()['devices'] ?? null);
+        } finally {
+            self::cleanupMountPoints();
+            @unlink($iso);
+        }
+    }
+
+    public function testMultipleDevicesDuplicateModeMirrorsSourceOntoEachTarget(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1', '/dev/zero1', '/dev/urandom1'];
+
+        try {
+            // scratch mode, skip Ventoy, [no payload prompt: --source-device pre-set],
+            // [no ISO/persistence/downloads prompts], 2x wipe confirm
+            $tester->setInputs(['1', '1', 'yes', 'yes']);
+            $exit = $tester->execute(
+                ['--device' => '/dev/null,/dev/zero', '--source-device' => '/dev/urandom'],
+                ['interactive' => true]
+            );
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertSame(2, substr_count($display, 'Data partition mirrored.'));
+            self::assertStringContainsString('Payload duplicated from /dev/urandom.', $display);
+            // source is mounted twice total (once for the up-front capacity preflight, once
+            // shared across the whole write loop) — NOT once per target device (would be 3)
+            self::assertSame(
+                2,
+                count(
+                    array_filter(
+                        $fake->commands,
+                        static fn(string $c): bool => str_contains($c, "mount -o ro '/dev/urandom1'")
+                    )
+                )
+            );
+        } finally {
+            self::cleanupMountPoints();
+        }
+    }
+
+    public function testMultipleDevicesMixedOutcomeOneFailsOneSucceedsReturnsFailure(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+        // only /dev/null1 "appears" — /dev/zero1 never does, so its reformat step times out
+        $this->command->existingPartitions = ['/dev/null1'];
+
+        try {
+            // scratch mode, skip Ventoy, payload default, ISO skip, no downloads, 2x wipe confirm
+            $tester->setInputs(['1', '1', '', '2', '-', 'yes', 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null,/dev/zero'], ['interactive' => true]);
+
+            self::assertSame(Command::FAILURE, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString('USB Setup — Results', $display);
+            self::assertMatchesRegularExpression('#/dev/null\s+OK#', $display);
+            self::assertStringContainsString('FAILED', $display);
+            self::assertStringContainsString('did not appear within', $display);
+            self::assertTrue($fake->ran("mkfs.fat -F 32 -n 'VENTOY'"));
+        } finally {
+            self::cleanupMountPoints();
         }
     }
 
@@ -478,10 +639,9 @@ final class UsbSetupCommandFlowTest extends TestCase
         $display = $this->display($tester);
         self::assertStringContainsString('Ventoy install skipped.', $display);
         self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
-        // no Ventoy anywhere: neutral label, no Ventoy boot hint
+        // no Ventoy anywhere: neutral label
         self::assertTrue($fake->ran("mkfs.fat -F 32 -n 'USBDATA'"));
-        self::assertStringContainsString('no Ventoy on this stick', $display);
-        self::assertStringNotContainsString('boot them with Ventoy', $display);
+        self::assertStringContainsString('Copy files onto the data partition (FAT32) of each stick', $display);
         self::assertFalse($fake->ran('bash ./'));
     }
 
