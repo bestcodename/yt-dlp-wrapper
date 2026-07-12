@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-12
+
+### Changed
+
+- `PlaylistsSyncCommand` and `UsbSetupCommand` slimmed down (1034 / 1338 lines removed) by extracting their
+  process-heavy logic into focused, independently-tested service classes, continuing the pattern already used for
+  `ProcessRunner`: `App\Playlists\SpotdlDownloader`, `YtDlpDownloader`, `AudioConverter` (ODG-quality logic),
+  `DownloadArchive`; `App\UsbSetup\VentoyInstaller`, `PartitionFormatter`, `IsoDownloader`, `DeviceInspector`,
+  `IsoPayloadManager`, `RsyncMirror`, `SoftwareDownloadsManager`; and a shared `App\Process\BinaryChecker`. The
+  Commands now delegate to these classes for option parsing, prompts, and orchestration; no behaviour change.
+  Test suite reorganized to match: the monolithic `tests/Command/UsbSetupCommandTest.php` and
+  `UsbSetupCommandProcessTest.php` are replaced by per-class tests under `tests/Playlists/` and `tests/UsbSetup/`
+
+## [0.6.0] - 2026-07-12
+
 ### Added
 
 - `playlists:sync` — `original` is now a real output format: including it in `--formats` / `FORMATS` / `formats`
@@ -22,6 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   probes each existing mp3 target's average bitrate and, if it's off from `--mp3-bitrate` by more than 10%
   (or 8 kbps), deletes and reconverts it — no redownload needed, the source stays archived. Fixes mp3s
   converted before switching to CBR (the same "32 kbit/s" scenario above) without manually deleting files
+- `playlists:sync` — re-encoded stale MP3 files are now collected into an end-of-run warning summary instead of
+  being printed inline, so the list survives alongside the progress bars
 - `playlists:sync` — CLI options for every parameter (`--formats`, `--mp3-quality`, `--library-dir`,
   `--archive-dir`, `--lib-filename-template`, `--ytdlp-bin`, `--spotdl-bin`, `--ffmpeg-bin`, `--ffprobe-bin`,
   `--extractor-retries`, `--retry-sleep`, `--sleep-requests`, `--limit-rate`, `--pause-between`); resolution stays
@@ -58,7 +75,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--install-ventoy` / `USB_INSTALL_VENTOY` (yes/no, skips the Ventoy prompt) and `--iso-variant` /
   `USB_ISO_VARIANT` (implies ISO source "download", skips the ISO prompts, works non-interactively too);
   usb:setup now reads `.env` (loader moved to `BaseCommand`)
-
 - `playlists:sync` — config-file fallback layer for every parameter: all env vars now have a snake_case equivalent
   in `config/playlists-sync.json` (resolution order: CLI option → env var → config file → prompt → default); new
   `config/playlists-sync.json.example`
@@ -72,7 +88,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README/docs — shared "Configuration & parameter resolution" overview (evaluation order, persistence rule) plus
   unified per-command parameter tables (param, CLI option, env var, config key, prompted-when, default) for
   `playlists:sync` and `usb:setup`
-
 - Spotify support via [spotdl](https://github.com/spotDL/spotify-downloader): `open.spotify.com` playlist/album/track
   URLs (and `spotify:` URIs) in the input file are routed to spotdl, which matches tracks on YouTube Music and
   downloads best-quality m4a originals (`--bitrate disable`) named `{track-id} - {title}` into the shared library;
@@ -80,7 +95,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (progress counted by archive diff); the existing ffmpeg conversion + M3U8 pipeline applies unchanged to all
   sources. New env vars `SPOTDL_BIN` and `SPOTDL_COOKIE_FILE` (optional YT Music Premium cookies → 256k m4a);
   spotdl installed in the ddev web image
-
 - `App\Process\ProcessRunner` interface + `ProcOpenProcessRunner` implementation — injectable process-execution seam
   (optional constructor argument on both commands, defaulting to the real runner) extracted from the two duplicated
   `runCmd` `proc_open` loops; `UsbSetupCommand::deviceNameCheckOutcome` pure helper extracted from
@@ -105,6 +119,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clobber), device-name mismatch warning + abort, mode default follows detected stick state, update mode falls back
   to a full Ventoy install (`-I`) when Ventoy is missing
 
+### Changed
+
+- `usb:setup` — the ISO/software download cache moved from top-level `.cache/` to `downloads/.cache/`, so all
+  generated/downloaded content lives under the one gitignored `downloads/` tree; default `--cache-dir` /
+  `USB_CACHE_DIR` / `cache_dir` updated accordingly (existing cached files should be moved manually, or just
+  re-downloaded — nothing migrates automatically)
+- **Breaking**: `config/spotdl-cookies.txt` is no longer a spotdl default — point
+  `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file` at it or merge its cookies into
+  `config/cookies.txt`; by default spotdl now shares `config/cookies.txt` with yt-dlp
+- `usb:setup` — mode/Ventoy/payload/ISO/variant/persistence/downloads prompts and the execute-flow confirmations
+  refactored onto the shared `BaseCommand` helpers (prompt texts and behaviour unchanged)
+- Empty env-var values are now treated as unset for all resolver-routed `playlists:sync` parameters (previously
+  `MP3_QUALITY=""` was used verbatim)
+- `ensureConverted` collects re-encoded MP3 paths into `$reencodedStaleMp3` instead of printing inline warnings,
+  keeping output compatible with progress-bar updates in pty-less environments
+- `BaseCommand` gained an `ensureDirectory` helper replacing redundant `mkdir` calls (TOCTOU-safe directory
+  creation across both commands); `saveConfig` calls replaced with a new `updateConfig` method to avoid
+  clobbering pre-existing config data; unused `ProcessRunner`/`SymfonyStyle` dependencies removed where unused
+- `playlists:sync` — ffmpeg conversions now run with `-loglevel error` instead of `-loglevel warning`, silencing
+  harmless warning noise (e.g. "timescale not set", "encoding as 24 bits-per-sample") that garbled the progress bars
+- **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube
+  and now Spotify, so the old name was misleading. Class `SoundCloudDownloadCommand` → `PlaylistsSyncCommand`,
+  config `config/soundcloud-download.json` → `config/playlists-sync.json` (existing legacy config is read once as
+  a fallback and migrated on the next interactive save), docs `docs/soundcloud-downloader.md` →
+  `docs/playlists-sync.md`
+- PHP requirement corrected from `>=8.1` to `>=8.2` — symfony/console ^7.0 and phpunit ^11 already require 8.2,
+  so 8.1 could never install the project; composer.lock content-hash refreshed
+- `soundcloud:download` — `requireBinary` now runs through the `ProcessRunner` seam instead of raw `@exec`
+- `usb:setup` — the "Software downloads file" prompt is asked only on the first run: any saved `download_sources`
+  answer (including `-` for "none", which is now persisted) is reused silently with an informational note;
+  `--downloads-file` or a config edit changes it later. Duplicate mode no longer prompts — downloads apply there
+  only via an explicit `--downloads-file`
+
+### Fixed
+
+- `soundcloud:download` — no longer crashes with a ProgressBar `LogicException` when every playlist fetch fails or
+  all playlists are empty (overall progress bar with `%remaining%` and 0 max steps)
+- `usb:setup` — partition paths are now derived correctly for devices whose name ends in a digit
+  (`/dev/nvme0n1` → `nvme0n1p1`/`nvme0n1p2`, mmcblk/loop likewise) via a new `partitionPath` helper; previously naive
+  `…1`/`…2` concatenation produced wrong node names (`nvme0n11`) on NVMe targets and sources
+- `playlists:sync` — progress bars no longer garble under `docker exec`/`ddev exec` (no pty). Symfony's `ProgressBar`
+  silently redirects to `$output->getErrorOutput()` for any `ConsoleOutputInterface` — invisible on a real terminal
+  since stdout/stderr share one tty there, but under a pty-less `exec` they're two independently-buffered pipes
+  (stderr unbuffered, stdout block-buffered) that desync when merged for display. New `barOutput()` helper forces
+  all three progress bars (`fetchBar`/`overallBar`/`convBar`) onto the same stream as the rest of the command's
+  output instead
+- Addressed incorrect bitrate metadata affecting Rekordbox with pre-CBR VBR MP3 files
+
+## [0.5.0] - 2026-07-09
+
+### Added
+
 - `usb:setup` — `--source-device` option (and interactive "Payload" prompt) to duplicate an already-set-up Ventoy
   stick onto the target: after the normal Ventoy install, the source's data partition (ISO, `ventoy/ventoy.json`,
   `persistence.dat` including its user data, `/software/`) is mirrored via rsync instead of downloaded/created from
@@ -113,20 +179,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   warning, source/target swap detection via recorded device names, and an `--update` re-sync mode that previews
   deletions (rsync dry run) and asks for confirmation. New config keys: `payload_source`, `source_device`,
   `source_device_name`; `rsync` added to the ddev web image
+
+### Fixed
+
+- Prevention of accidental overwrites when the source and target devices are swapped after replugging
+- Correct handling of oversized files exceeding FAT32 limits during duplication (warning and explicit confirmation
+  added)
+
+## [0.4.1] - 2026-07-08
+
+### Added
+
+- `usb:setup` — lsblk-based Ventoy detection (`hasVentoyPartition`, `partitionNames`) used for the update/redo mode
+  default, plus post-install verification that the VTOYEFI partition exists
+
+### Changed
+
+- `installVentoy` runs `Ventoy2Disk.sh` from its own directory and always pipes `yes` into it; the `-u`/`-I` flag
+  now follows detected stick state, with update mode warning and falling back to a full install when Ventoy is
+  missing
+
+### Fixed
+
+- `usb:setup` — stale config snapshot no longer clobbers `device_name` on save
+- Silent Ventoy install failures (swallowed exit code, tool-check failure, refused update) now abort with an error
+- Removed broken `mkexfatfs`/`exfatfsck` shims from the ddev web Dockerfile
+
+## [0.4.0] - 2026-07-01
+
+### Added
+
 - Broadened unit-test coverage: extracted behavior-preserving pure helpers and tested them —
   `SoundCloudDownloadCommand::buildFfmpegArgs` (locks in audio-only `0:a:0` mapping, cover-for-mp3/flac-only, `-ar`
   resample selection, and metadata args), `mapInfoJsonToTags`, `relativeFromParts`; and
   `UsbSetupCommand::parseChecksum`,
   `classifyDownloadLine` (http/torrent/local/recursive/invalid), `shouldRejectAsHtml`, `parseLastContentType`. Added
   `tests/Command/UsbSetupCommandTest.php`
-- PHPUnit test suite (`phpunit.xml`, `tests/`) covering the pure conversion/rate-selection, sleep-request, and
-  filename-sanitization helpers; `composer test` script and `phpunit/phpunit` dev dependency
+
+## [0.3.0] - 2026-07-01
+
+### Added
+
 - `UsbSetup.php` — installs Ventoy (MBR partition table, FAT32 data partition), copies a Debian live ISO, and sets up
   Ventoy persistence via a loop-mounted ext4 image and `ventoy.json`
 - `docs/soundcloud-downloader.md` — full ddev command reference, `.env` options, output layout, Rekordbox import guide,
   and troubleshooting table
 - `docs/usb-setup.md` — USB setup command reference, step-by-step explanation, partition layout, FAT32 limitations, and
   boot instructions
+- Progress bars for playlist fetching, track downloads, and file conversion; `python3-pip` and `curl-cffi` installed
+  in the Docker image to support them
+- PHPUnit test suite (`phpunit.xml`, `tests/`) covering the pure conversion/rate-selection, sleep-request, and
+  filename-sanitization helpers; `composer test` script and `phpunit/phpunit` dev dependency
 - `usb:setup` — `--downloads-file` option and shared `config/usb-setup.json` `download_sources` entry to copy
   additional software (Rekordbox, T-Racks 8x8 Matrix Digital Processor Editor, Ableton Live trial) onto the stick's
   `/software/` folder; `magnet:`/`urn:btmh:` link syntax is recognized and reserved for future torrent support but
@@ -144,41 +247,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `usb:setup` — the ISO/software download cache moved from top-level `.cache/` to `downloads/.cache/`, so all
-  generated/downloaded content lives under the one gitignored `downloads/` tree; default `--cache-dir` /
-  `USB_CACHE_DIR` / `cache_dir` updated accordingly (existing cached files should be moved manually, or just
-  re-downloaded — nothing migrates automatically)
-- **Breaking**: `config/spotdl-cookies.txt` is no longer a spotdl default — point
-  `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file` at it or merge its cookies into
-  `config/cookies.txt`; by default spotdl now shares `config/cookies.txt` with yt-dlp
-- `usb:setup` — mode/Ventoy/payload/ISO/variant/persistence/downloads prompts and the execute-flow confirmations
-  refactored onto the shared `BaseCommand` helpers (prompt texts and behaviour unchanged)
-- Empty env-var values are now treated as unset for all resolver-routed `playlists:sync` parameters (previously
-  `MP3_QUALITY=""` was used verbatim)
-- `playlists:sync` — ffmpeg conversions now run with `-loglevel error` instead of `-loglevel warning`, silencing
-  harmless warning noise (e.g. "timescale not set", "encoding as 24 bits-per-sample") that garbled the progress bars
-- **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube
-  and now Spotify, so the old name was misleading. Class `SoundCloudDownloadCommand` → `PlaylistsSyncCommand`,
-  config `config/soundcloud-download.json` → `config/playlists-sync.json` (existing legacy config is read once as
-  a fallback and migrated on the next interactive save), docs `docs/soundcloud-downloader.md` →
-  `docs/playlists-sync.md`
-- PHP requirement corrected from `>=8.1` to `>=8.2` — symfony/console ^7.0 and phpunit ^11 already require 8.2,
-  so 8.1 could never install the project; composer.lock content-hash refreshed
-- `soundcloud:download` — `requireBinary` now runs through the `ProcessRunner` seam instead of raw `@exec`
-- `usb:setup` — the "Software downloads file" prompt is asked only on the first run: any saved `download_sources`
-  answer (including `-` for "none", which is now persisted) is reused silently with an informational note;
-  `--downloads-file` or a config edit changes it later. Duplicate mode no longer prompts — downloads apply there
-  only via an explicit `--downloads-file`
 - `.gitignore` no longer blanket-excludes `config/`; only personal/machine-specific files (`usb-setup.json`,
   `playlists.txt`, `cookies.txt`, and anything under `usb-manual-downloads/`) stay gitignored
+- Download logic reworked for more efficient playlist/track handling with streamlined progress tracking and
+  clearer error messages; download/metadata statuses standardized on `SEEN`/`DONE` markers
+- README/TODO documentation updates (Docker install prerequisite for ddev, clarified dependencies); added
+  `laravel-idea.xml` PHPStorm config
 
 ### Fixed
 
-- `soundcloud:download` — no longer crashes with a ProgressBar `LogicException` when every playlist fetch fails or
-  all playlists are empty (overall progress bar with `%remaining%` and 0 max steps)
-- `usb:setup` — partition paths are now derived correctly for devices whose name ends in a digit
-  (`/dev/nvme0n1` → `nvme0n1p1`/`nvme0n1p2`, mmcblk/loop likewise) via a new `partitionPath` helper; previously naive
-  `…1`/`…2` concatenation produced wrong node names (`nvme0n11`) on NVMe targets and sources
 - `usb:setup` — Ventoy no longer fails with `mkexfatfs: command not found`; `.ddev/web-build/Dockerfile` symlinks the
   modern `exfatprogs` binaries (`mkfs.exfat` → `mkexfatfs`, `fsck.exfat` → `exfatfsck`) to the legacy names Ventoy
   probes for
@@ -195,12 +272,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count is now derived by diffing the playlist against a snapshot of the download archive taken before the run.
   The summary also gained a `N failed` suffix for tracks that were neither downloaded nor previously archived (e.g.
   DRM-protected or geo-restricted). Covered by new `loadArchiveIds`/`countArchived` unit tests
-- `playlists:sync` — progress bars no longer garble under `docker exec`/`ddev exec` (no pty). Symfony's `ProgressBar`
-  silently redirects to `$output->getErrorOutput()` for any `ConsoleOutputInterface` — invisible on a real terminal
-  since stdout/stderr share one tty there, but under a pty-less `exec` they're two independently-buffered pipes
-  (stderr unbuffered, stdout block-buffered) that desync when merged for display. New `barOutput()` helper forces
-  all three progress bars (`fetchBar`/`overallBar`/`convBar`) onto the same stream as the rest of the command's
-  output instead
+- Metadata files no longer mismatch during playlist conversion; improved handling of empty playlists and conversion
+  progress display
 
 ## [0.2.0] - 2026-02-24
 
@@ -229,7 +302,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `README.md` with project description, requirements, installation, configuration, usage, output layout, and
   troubleshooting
 
-[Unreleased]: https://github.com/user/yt-dlp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/user/yt-dlp/compare/v0.6.1...HEAD
+
+[0.6.1]: https://github.com/user/yt-dlp/compare/v0.6.0...v0.6.1
+
+[0.6.0]: https://github.com/user/yt-dlp/compare/v0.5.0...v0.6.0
+
+[0.5.0]: https://github.com/user/yt-dlp/compare/v0.4.1...v0.5.0
+
+[0.4.1]: https://github.com/user/yt-dlp/compare/v0.4.0...v0.4.1
+
+[0.4.0]: https://github.com/user/yt-dlp/compare/v0.3.0...v0.4.0
+
+[0.3.0]: https://github.com/user/yt-dlp/compare/v0.2.0...v0.3.0
 
 [0.2.0]: https://github.com/user/yt-dlp/compare/v0.1.0...v0.2.0
 

@@ -1,7 +1,0 @@
-{
-    "input_file": "config/playlists.txt",
-    "output_dir": "./downloads",
-    "min_odg_mode": "filter",
-    "min_odg": -2,
-    "formats": "mp3,wav"
-}

@@ -2,7 +2,6 @@
 /config/*
 !/config/usb-downloads.txt
 !/config/usb-setup.json.example
-!/config/playlists-sync.json
 !/config/playlists.txt.example
 !/config/cookies.txt.example
 !/config/usb-manual-downloads
