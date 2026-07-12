@@ -650,6 +650,173 @@ final class DeviceInspectorTest extends TestCase
         self::assertSame('/dev/sdz', $result);
     }
 
+    public function testPromptForDevicesDedupesRepeatedSelection(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("0,0\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame(['/dev/sdb'], $result);
+    }
+
+    public function testPromptForDevicesDefaultSelectionPreselectsSavedDevices(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            ['/dev/sdb', '/dev/sdc']
+        );
+
+        self::assertSame(['/dev/sdb', '/dev/sdc'], $result);
+    }
+
+    // --- promptForDevice ---
+
+    public function testPromptForDevicesEnterPathManuallyAppendsSupplementalPaths(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("0,2\n/dev/sdz\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame(['/dev/sdb', '/dev/sdz'], $result);
+    }
+
+    public function testPromptForDevicesExcludesMultipleDevicesFromChoiceList(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("0\n\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            null,
+            'Target devices',
+            ['/dev/sdb', '/dev/sdc']
+        );
+
+        // sdb and sdc are both excluded, so the only remaining choice is "Enter path manually";
+        // selecting it with a blank manual answer resolves to no device paths.
+        self::assertSame([], $result);
+    }
+
+    public function testPromptForDevicesListsAndSelectsMultipleByCommaIndices(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("0,1\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame(['/dev/sdb', '/dev/sdc'], $result);
+    }
+
+    // --- promptForDevices ---
+
+    public function testPromptForDevicesNoDevicesEmptyAnswerReturnsEmptyArray(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame([], $result);
+    }
+
+    public function testPromptForDevicesNoDevicesExcludedAnswerRejected(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+        $input = self::interactiveInput("/dev/sdy,/dev/sdz\n");
+        $output = new BufferedOutput();
+        $io = new SymfonyStyle($input, $output);
+
+        $result = $inspector->promptForDevices(
+            $input,
+            $output,
+            new QuestionHelper(),
+            $io,
+            null,
+            'Target devices',
+            ['/dev/sdz']
+        );
+
+        self::assertSame([], $result);
+        self::assertStringContainsString('Source and target must be different devices.', $output->fetch());
+    }
+
+    public function testPromptForDevicesNoDevicesFallsBackToCommaSeparatedFreeText(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevices(
+            self::interactiveInput("/dev/sdy,/dev/sdz\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame(['/dev/sdy', '/dev/sdz'], $result);
+    }
+
+    public function testRejectExcludedDeviceArrayMatchReturnsNullWithError(): void
+    {
+        $inspector = self::make(new FakeProcessRunner());
+        $output = new BufferedOutput();
+        $io = new SymfonyStyle(new ArrayInput([]), $output);
+
+        $result = $inspector->rejectExcludedDevice('/dev/sdc', ['/dev/sdb', '/dev/sdc'], $io);
+
+        self::assertNull($result);
+        self::assertStringContainsString('Source and target must be different devices.', $output->fetch());
+    }
+
+    public function testRejectExcludedDeviceArrayNoMatchReturnsDevice(): void
+    {
+        $inspector = self::make(new FakeProcessRunner());
+
+        self::assertSame(
+            '/dev/sdd',
+            $inspector->rejectExcludedDevice('/dev/sdd', ['/dev/sdb', '/dev/sdc'], self::io())
+        );
+    }
+
     public function testRejectExcludedDeviceDifferentReturnsDevice(): void
     {
         $inspector = self::make(new FakeProcessRunner());
@@ -663,8 +830,6 @@ final class DeviceInspectorTest extends TestCase
 
         self::assertNull($inspector->rejectExcludedDevice(null, '/dev/sdc', self::io()));
     }
-
-    // --- promptForDevice ---
 
     public function testRejectExcludedDeviceSameReturnsNullWithError(): void
     {

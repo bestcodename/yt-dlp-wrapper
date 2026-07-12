@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-12
+
+### Added
+
+- `usb:setup` — support for multiple simultaneous destination USB drives: `--device`/`USB_DEVICE` accept a
+  comma-separated list, and the interactive prompt becomes a multi-select. Devices are processed sequentially
+  within one invocation (not in parallel); the ISO download and software downloads are still fetched only once
+  and reused for every device. One device failing does not abort the rest of the batch — a per-device pass/fail
+  summary is printed at the end and the command exits non-zero if any device failed. `DeviceInspector` gained
+  `promptForDevices()` (multi-select counterpart to `promptForDevice()`) and its `promptForDevice()`/
+  `rejectExcludedDevice()` now accept `string|array|null` for `$excludeDevice` so a batch of targets can be
+  excluded from the duplicate-mode source-device prompt at once
+
+### Changed
+
+- `usb:setup` config schema: the singular `device`/`device_name` keys are replaced by a `devices` array (prompt
+  default only) plus per-device `dev_<name>_device`/`dev_<name>_device_name` keys, so each target's Ventoy/name
+  history is tracked independently. A pre-existing singular `device` config key is still read as a one-time
+  fallback default for the new multi-select prompt
+
 ## [0.6.2] - 2026-07-12
 
 ### Added

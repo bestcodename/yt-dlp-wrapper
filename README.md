@@ -234,6 +234,12 @@ Can also duplicate an already-set-up stick onto a new one of any size ≥ the us
 is installed on the target, then the source's data partition (ISO, persistence incl. user data, `/software/`) is
 mirrored via rsync from a read-only mount.
 
+Multiple target devices are supported in a single run: pass a comma-separated list (`--device /dev/sdb,/dev/sdc`) or
+select several from the interactive multi-select prompt. Devices are set up **sequentially, not in parallel** — the
+ISO download and software downloads are still fetched only once and reused for every device. One device failing
+(e.g. a partition that never appears) does not abort the rest of the batch; a per-device pass/fail summary is
+printed at the end and the command exits non-zero if any device failed.
+
 All required tools (dosfstools, e2fsprogs, util-linux, Ventoy) are installed automatically in the ddev container.
 
 ### Quick start
@@ -255,7 +261,7 @@ usb:setup reads the same `.env` file as playlists:sync.
 
 | Parameter          | CLI option           | Env var                | Config key                             | Prompted when                                                                     | Default                            |
 |--------------------|----------------------|------------------------|----------------------------------------|-----------------------------------------------------------------------------------|------------------------------------|
-| Target device      | `--device`           | `USB_DEVICE`           | `device` (prompt default only)         | every interactive run (device list choice)                                        | —                                  |
+| Target device(s)   | `--device`           | `USB_DEVICE`           | `devices` (prompt default only)        | every interactive run (multi-select device list)                                  | —                                  |
 | Mode (update/redo) | `--update`           | `USB_UPDATE`           | —                                      | every interactive run unless CLI/env value                                        | auto (update when Ventoy detected) |
 | Ventoy install     | `--install-ventoy`   | `USB_INSTALL_VENTOY`   | `install_ventoy` (prompt default only) | every interactive run unless CLI/env value                                        | install/update                     |
 | Payload source     | `--source-device`    | `USB_SOURCE_DEVICE`    | `payload_source`, `source_device`      | every interactive run unless `--source-device`                                    | configuration                      |
@@ -270,6 +276,9 @@ usb:setup reads the same `.env` file as playlists:sync.
 
 `--yes`/`-y`/`USB_YES` skips confirmation prompts (wipe/update/continue-anyway); `-n`/`--no-interaction` skips
 **all** prompts and implies `-y` — the device is then required (via `--device` or `USB_DEVICE`).
+
+`--device`/`USB_DEVICE` accept a comma-separated list (e.g. `--device /dev/sdb,/dev/sdc`) to set up several sticks
+in one run; per-device name history is recorded under `dev_<name>_device`/`dev_<name>_device_name` config keys.
 
 ### ISO download
 
