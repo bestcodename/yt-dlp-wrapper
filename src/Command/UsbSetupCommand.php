@@ -4,9 +4,15 @@ declare(strict_types=1);
 
 namespace App\Command;
 
-use FilesystemIterator;
-use RecursiveDirectoryIterator;
-use RecursiveIteratorIterator;
+use App\Process\BinaryChecker;
+use App\Process\ProcessRunner;
+use App\UsbSetup\DeviceInspector;
+use App\UsbSetup\IsoDownloader;
+use App\UsbSetup\IsoPayloadManager;
+use App\UsbSetup\PartitionFormatter;
+use App\UsbSetup\RsyncMirror;
+use App\UsbSetup\SoftwareDownloadsManager;
+use App\UsbSetup\VentoyInstaller;
 use RuntimeException;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -14,8 +20,6 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Question\ChoiceQuestion;
-use Symfony\Component\Console\Question\ConfirmationQuestion;
-use Symfony\Component\Console\Question\Question;
 use Symfony\Component\Console\Style\SymfonyStyle;
 use Throwable;
 
@@ -23,7 +27,53 @@ class UsbSetupCommand extends BaseCommand
 {
     /** Windows/desktop-trash/vfat-fsck artifacts never worth mirroring between sticks. */
     private const ISO_VARIANTS = ['standard', 'gnome', 'kde', 'cinnamon', 'lxde', 'lxqt', 'mate', 'xfce'];
-    private const RSYNC_EXCLUDES = ['System Volume Information', '.Trash-*', '.Trashes', 'FOUND.[0-9][0-9][0-9]'];
+
+    private readonly BinaryChecker $binaryChecker;
+    private readonly DeviceInspector $deviceInspector;
+    private readonly IsoDownloader $isoDownloader;
+    private readonly IsoPayloadManager $isoPayloadManager;
+    private readonly PartitionFormatter $partitionFormatter;
+    private readonly RsyncMirror $rsyncMirror;
+    private readonly SoftwareDownloadsManager $softwareDownloadsManager;
+    private readonly VentoyInstaller $ventoyInstaller;
+
+    public function __construct(
+        ?ProcessRunner $runner = null,
+        ?string $name = null,
+        ?BinaryChecker $binaryChecker = null,
+        ?VentoyInstaller $ventoyInstaller = null,
+        ?PartitionFormatter $partitionFormatter = null,
+        ?IsoDownloader $isoDownloader = null,
+        ?DeviceInspector $deviceInspector = null,
+        ?IsoPayloadManager $isoPayloadManager = null,
+        ?RsyncMirror $rsyncMirror = null,
+        ?SoftwareDownloadsManager $softwareDownloadsManager = null,
+    ) {
+        parent::__construct($runner, $name);
+        $this->binaryChecker = $binaryChecker ?? new BinaryChecker($this->runner);
+        $waitForPartition = fn(string $part, int $timeoutSec = 10) => $this->waitForPartition($part, $timeoutSec);
+        $this->ventoyInstaller = $ventoyInstaller ?? new VentoyInstaller($this->runner, $waitForPartition);
+        $this->partitionFormatter = $partitionFormatter ?? new PartitionFormatter($this->runner, $waitForPartition);
+        $this->isoDownloader = $isoDownloader ?? new IsoDownloader($this->runner);
+        $this->deviceInspector = $deviceInspector ?? new DeviceInspector(
+            $this->runner,
+            fn(array $updates) => $this->updateConfig($updates),
+        );
+        $this->isoPayloadManager = $isoPayloadManager ?? new IsoPayloadManager($this->runner);
+        $this->rsyncMirror = $rsyncMirror ?? new RsyncMirror($this->runner);
+        $this->softwareDownloadsManager = $softwareDownloadsManager ?? new SoftwareDownloadsManager($this->runner);
+    }
+
+    protected function waitForPartition(string $part, int $timeoutSec = 10): void
+    {
+        $deadline = time() + $timeoutSec;
+        while (!file_exists($part) && time() < $deadline) {
+            usleep(300000);
+        }
+        if (!file_exists($part)) {
+            throw new RuntimeException("Partition {$part} did not appear within {$timeoutSec}s.");
+        }
+    }
 
     protected function configure(): void
     {
@@ -161,7 +211,13 @@ class UsbSetupCommand extends BaseCommand
 
         if ($input->isInteractive()) {
             if ($device === null) {
-                $device = $this->promptForDevice($input, $output, $helper, $config['device'] ?? null);
+                $device = $this->deviceInspector->promptForDevice(
+                    $input,
+                    $output,
+                    $helper,
+                    $this->io,
+                    $config['device'] ?? null
+                );
                 if ($device === null) {
                     $this->io->note('Aborted.');
 
@@ -183,10 +239,11 @@ class UsbSetupCommand extends BaseCommand
 
             // Check/record the device's vendor+model name as early as possible, right after the
             // device is finalized, so a mismatch warning appears before any further prompts.
-            $deviceDesc = $this->checkAndRecordDeviceName(
+            $deviceDesc = $this->deviceInspector->checkAndRecordDeviceName(
                 $input,
                 $output,
                 $helper,
+                $this->io,
                 $device,
                 $config,
                 true,
@@ -197,7 +254,7 @@ class UsbSetupCommand extends BaseCommand
             }
 
             // Warn immediately if any partitions of this device are mounted on the host
-            $mountedParts = $this->getMountedPartitions($device);
+            $mountedParts = $this->deviceInspector->getMountedPartitions($device);
             if (!empty($mountedParts)) {
                 $lines = ["Partitions of $device are mounted on the host system — unmount them before proceeding:"];
                 foreach ($mountedParts as [$part, $mountpoint]) {
@@ -224,7 +281,7 @@ class UsbSetupCommand extends BaseCommand
             // Mode: update existing setup or redo from scratch (--update / USB_UPDATE skip the prompt)
             if ($updateParam === null) {
                 $modeLabels = ['update existing setup', 'redo from scratch'];
-                $ventoyDetected = $this->hasVentoyPartition($device);
+                $ventoyDetected = $this->deviceInspector->hasVentoyPartition($device);
                 $modeDefault = $ventoyDetected ? 0 : 1;
                 $isUpdate = $this->askChoice($input, $output, 'Mode', $modeLabels, $modeDefault)
                     === 'update existing setup';
@@ -252,10 +309,11 @@ class UsbSetupCommand extends BaseCommand
                         $payloadLabels,
                         $payloadDefault
                     ) === $payloadLabels[1]) {
-                    $sourceDevice = $this->promptForDevice(
+                    $sourceDevice = $this->deviceInspector->promptForDevice(
                         $input,
                         $output,
                         $helper,
+                        $this->io,
                         $config['source_device'] ?? null,
                         'Source device',
                         $device
@@ -272,10 +330,11 @@ class UsbSetupCommand extends BaseCommand
                 // duplicate mode mirrors the source stick — a pre-set ISO download does not apply
                 $isoSrc = null;
                 $variant = null;
-                $res = $this->validateSourceDevice(
+                $res = $this->deviceInspector->validateSourceDevice(
                     $input,
                     $output,
                     $helper,
+                    $this->io,
                     $sourceDevice,
                     $device,
                     $config,
@@ -419,7 +478,7 @@ class UsbSetupCommand extends BaseCommand
         // runs in both interactive and non-interactive mode (--iso-variant / USB_ISO_VARIANT)
         if ($isoSrc === 'download' && $variant !== null) {
             try {
-                $debianIso = $this->downloadDebianIso($variant, $output, $cacheDir);
+                $debianIso = ($this->isoDownloader)($variant, $output, $this->io, $cacheDir);
             } catch (RuntimeException $e) {
                 $this->io->error($e->getMessage());
 
@@ -439,10 +498,11 @@ class UsbSetupCommand extends BaseCommand
         }
 
         if ($deviceDesc === null) {
-            $deviceDesc = $this->checkAndRecordDeviceName(
+            $deviceDesc = $this->deviceInspector->checkAndRecordDeviceName(
                 $input,
                 $output,
                 $helper,
+                $this->io,
                 $device,
                 $config,
                 $input->isInteractive(),
@@ -454,10 +514,11 @@ class UsbSetupCommand extends BaseCommand
         }
 
         if ($sourceDevice !== null && $sourceDeviceDesc === null) {
-            $res = $this->validateSourceDevice(
+            $res = $this->deviceInspector->validateSourceDevice(
                 $input,
                 $output,
                 $helper,
+                $this->io,
                 $sourceDevice,
                 $device,
                 $config,
@@ -482,16 +543,16 @@ class UsbSetupCommand extends BaseCommand
         }
 
         try {
-            $this->requireBin('lsblk');
-            $this->requireBin('mkfs.fat');
-            $this->requireBin('mkfs.ext4');
-            $this->requireBin('mount');
-            $this->requireBin('umount');
+            ($this->binaryChecker)('lsblk');
+            ($this->binaryChecker)('mkfs.fat');
+            ($this->binaryChecker)('mkfs.ext4');
+            ($this->binaryChecker)('mount');
+            ($this->binaryChecker)('umount');
             if ($isDuplicate) {
-                $this->requireBin('rsync');
-                $this->requireBin('blockdev');
+                ($this->binaryChecker)('rsync');
+                ($this->binaryChecker)('blockdev');
             }
-            $ventoyBin = $this->findVentoyBin($ventoyBinHint);
+            $ventoyBin = $this->ventoyInstaller->findBin($ventoyBinHint);
         } catch (RuntimeException $e) {
             $this->io->error($e->getMessage());
 
@@ -502,12 +563,12 @@ class UsbSetupCommand extends BaseCommand
         // target BEFORE anything is confirmed or wiped.
         $sourceUsedBytes = 0;
         if ($isDuplicate) {
-            $sourcePartition = self::partitionPath($sourceDevice, 1);
+            $sourcePartition = DeviceInspector::partitionPath($sourceDevice, 1);
             $srcMount = null;
             $oversized = '';
             try {
                 $this->waitForPartition($sourcePartition);
-                $srcMount = $this->mountPartition($sourcePartition, $output, 'src', true);
+                $srcMount = $this->partitionFormatter->mount($sourcePartition, $output, 'src', true);
                 $total = disk_total_space($srcMount);
                 $free = disk_free_space($srcMount);
                 if ($total === false || $free === false) {
@@ -523,12 +584,12 @@ class UsbSetupCommand extends BaseCommand
                 return Command::FAILURE;
             } finally {
                 if ($srcMount !== null) {
-                    $this->unmountAndClean($srcMount);
+                    $this->partitionFormatter->unmount($srcMount);
                 }
             }
 
-            $targetCapacityBytes = $this->targetDataCapacityBytes($device);
-            if ($targetCapacityBytes > 0 && !self::fitsOnTarget($sourceUsedBytes, $targetCapacityBytes)) {
+            $targetCapacityBytes = $this->deviceInspector->targetDataCapacityBytes($device);
+            if ($targetCapacityBytes > 0 && !DeviceInspector::fitsOnTarget($sourceUsedBytes, $targetCapacityBytes)) {
                 $this->io->error(
                     sprintf(
                         'Source payload (%.1f GiB used) does not fit on the target data partition (%.1f GiB).',
@@ -573,7 +634,7 @@ class UsbSetupCommand extends BaseCommand
 
         // Ventoy update (-u) is refused on a stick without Ventoy — the flag must follow the
         // actual stick state, not the chosen mode.
-        $ventoyOnStick = $this->hasVentoyPartition($device);
+        $ventoyOnStick = $this->deviceInspector->hasVentoyPartition($device);
         $ventoyUpdate = $isUpdate && $ventoyOnStick;
         // Ventoy stays bootable when the install is skipped on a stick that already has it;
         // only a stick without Ventoy anywhere gets a neutral data-partition label.
@@ -656,7 +717,7 @@ class UsbSetupCommand extends BaseCommand
         $softwareFiles = [];
         if ($downloadsFile !== null) {
             try {
-                $softwareFiles = $this->prepareSoftwareDownloads($downloadsFile, $output, $cacheDir);
+                $softwareFiles = ($this->softwareDownloadsManager)($downloadsFile, $output, $this->io, $cacheDir);
             } catch (RuntimeException $e) {
                 $this->io->error($e->getMessage());
 
@@ -669,14 +730,14 @@ class UsbSetupCommand extends BaseCommand
         // Warning only — in update mode parts of the payload may already be on the stick, so the
         // estimate can overshoot.
         if (!$isDuplicate && ($debianIso !== null || $softwareFiles !== [])) {
-            $requiredBytes = self::estimateConfigurationPayloadBytes(
+            $requiredBytes = IsoPayloadManager::estimateConfigurationPayloadBytes(
                 $debianIso,
                 $persistenceMib,
                 $softwareFiles,
                 'filesize'
             );
-            $capacityBytes = $this->targetDataCapacityBytes($device);
-            if ($capacityBytes > 0 && !self::fitsOnTarget($requiredBytes, $capacityBytes)) {
+            $capacityBytes = $this->deviceInspector->targetDataCapacityBytes($device);
+            if ($capacityBytes > 0 && !DeviceInspector::fitsOnTarget($requiredBytes, $capacityBytes)) {
                 $this->io->warning(
                     sprintf(
                         'Configured payload (%.1f GiB: ISO + persistence + software) may not fit on the '.
@@ -701,12 +762,12 @@ class UsbSetupCommand extends BaseCommand
             }
         }
 
-        $dataPartition = self::partitionPath($device, 1);
+        $dataPartition = DeviceInspector::partitionPath($device, 1);
 
         // Step 1: Ventoy (-u to update in place, -I for full install)
         if ($installVentoy) {
             try {
-                $this->installVentoy($ventoyBin, $device, $output, $ventoyUpdate);
+                ($this->ventoyInstaller)($ventoyBin, $device, $output, $this->io, $ventoyUpdate);
             } catch (Throwable $t) {
                 $this->io->error($t->getMessage());
 
@@ -720,7 +781,7 @@ class UsbSetupCommand extends BaseCommand
         // Step 2: FAT32 — scratch mode always reformats (the wipe was double-confirmed, even
         // when Ventoy itself was skipped); update mode asks before erasing the data partition.
         $doReformat = true;
-        if ($isUpdate && $this->isFat32Ventoy($dataPartition, $dataLabel)) {
+        if ($isUpdate && $this->deviceInspector->isFat32Ventoy($dataPartition, $dataLabel)) {
             $this->io->text("Partition 1 already FAT32 ($dataLabel) — skipping reformat.");
             $doReformat = false;
         } elseif ($isUpdate) {
@@ -740,7 +801,7 @@ class UsbSetupCommand extends BaseCommand
         }
         if ($doReformat) {
             try {
-                $this->reformatFat32($dataPartition, $output, $dataLabel);
+                $this->partitionFormatter->reformatFat32($dataPartition, $output, $this->io, $dataLabel);
             } catch (Throwable $t) {
                 $messages = [$t->getMessage()];
                 if (!$installVentoy) {
@@ -758,17 +819,20 @@ class UsbSetupCommand extends BaseCommand
             $mount = null;
             $srcMount = null;
             try {
-                $mount = $this->mountPartition($dataPartition, $output);
+                $mount = $this->partitionFormatter->mount($dataPartition, $output);
                 $this->io->text("Mounted $dataPartition at $mount.");
 
                 if ($isDuplicate) {
-                    $sourcePartition = self::partitionPath($sourceDevice, 1);
-                    $srcMount = $this->mountPartition($sourcePartition, $output, 'src', true);
+                    $sourcePartition = DeviceInspector::partitionPath($sourceDevice, 1);
+                    $srcMount = $this->partitionFormatter->mount($sourcePartition, $output, 'src', true);
                     $this->io->text("Mounted $sourcePartition read-only at $srcMount.");
 
                     // Exact capacity re-check now that the target filesystem is mounted
                     $targetFsBytes = disk_total_space($mount);
-                    if ($targetFsBytes !== false && !self::fitsOnTarget($sourceUsedBytes, (int)$targetFsBytes)) {
+                    if ($targetFsBytes !== false && !DeviceInspector::fitsOnTarget(
+                            $sourceUsedBytes,
+                            (int)$targetFsBytes
+                        )) {
                         throw new RuntimeException(
                             sprintf(
                                 'Source payload (%.1f GiB used) does not fit on the target data partition (%.1f GiB).',
@@ -778,14 +842,15 @@ class UsbSetupCommand extends BaseCommand
                         );
                     }
 
-                    $mirrored = $this->mirrorDataPartition(
+                    $mirrored = ($this->rsyncMirror)(
                         $srcMount,
                         $mount,
                         $isUpdate,
                         $skipConfirm,
                         $input,
                         $output,
-                        $helper
+                        $helper,
+                        $this->io
                     );
                     if (!$mirrored) {
                         $this->io->note('Aborted.');
@@ -797,10 +862,13 @@ class UsbSetupCommand extends BaseCommand
                 if ($debianIso !== null) {
                     // Step 3: ISO (skip if same file already on stick)
                     $isoName = basename($debianIso);
-                    if (($isUpdate || $isDuplicate) && $this->isoMatchesOnStick($mount, $isoName, $debianIso)) {
+                    if (
+                        ($isUpdate || $isDuplicate)
+                        && $this->isoPayloadManager->isoMatchesOnStick($mount, $isoName, $debianIso)
+                    ) {
                         $this->io->text('ISO already on stick — skipping copy.');
                     } else {
-                        $isoName = $this->copyIso($debianIso, $mount, $output);
+                        $isoName = $this->isoPayloadManager->copyIso($debianIso, $mount, $output, $this->io);
                     }
 
                     // Step 4: Persistence (skip if already valid ext4 at correct size, or carried over from
@@ -814,23 +882,34 @@ class UsbSetupCommand extends BaseCommand
                                 '--persistence-size ignored — persistence.dat was duplicated from the source stick.'
                             );
                         }
-                    } elseif ($isUpdate && $this->isPersistenceValid($mount, $persistenceMib)) {
+                    } elseif ($isUpdate && $this->isoPayloadManager->isPersistenceValid($mount, $persistenceMib)) {
                         $this->io->text('persistence.dat already valid — skipping creation.');
                     } else {
-                        $persistDat = $this->createPersistenceFile($mount, $persistenceMib, $output);
+                        $persistDat = $this->isoPayloadManager->createPersistenceFile(
+                            $mount,
+                            $persistenceMib,
+                            $output,
+                            $this->io
+                        );
                     }
 
                     // Step 5: ventoy.json (skip if entry already correct)
-                    if (($isUpdate || $isDuplicate) && $this->ventoyJsonHasEntry($mount, $isoName)) {
+                    if (($isUpdate || $isDuplicate) && $this->isoPayloadManager->ventoyJsonHasEntry($mount, $isoName)) {
                         $this->io->text('ventoy.json already has correct entry — skipping.');
                     } else {
-                        $this->writeVentoyJson($mount, $isoName, $persistDat);
+                        $this->isoPayloadManager->writeVentoyJson($mount, $isoName, $persistDat, $this->io);
                     }
                 }
 
                 // Step 6: Software downloads (skip individually if already on stick, in update/duplicate mode)
                 if ($softwareFiles !== []) {
-                    $this->copySoftwareFiles($softwareFiles, $mount, $output, $isUpdate || $isDuplicate);
+                    $this->softwareDownloadsManager->copySoftwareFiles(
+                        $softwareFiles,
+                        $mount,
+                        $output,
+                        $this->io,
+                        $isUpdate || $isDuplicate
+                    );
                 }
 
                 $this->runCmd('sync', false, $output);
@@ -841,10 +920,10 @@ class UsbSetupCommand extends BaseCommand
                 return Command::FAILURE;
             } finally {
                 if ($srcMount !== null) {
-                    $this->unmountAndClean($srcMount);
+                    $this->partitionFormatter->unmount($srcMount);
                 }
                 if ($mount !== null) {
-                    $this->unmountAndClean($mount);
+                    $this->partitionFormatter->unmount($mount);
                     $this->io->text("Unmounted $dataPartition.");
                 }
             }
@@ -881,76 +960,6 @@ class UsbSetupCommand extends BaseCommand
         return !function_exists('posix_geteuid') || posix_geteuid() === 0;
     }
 
-    private function promptForDevice(
-        InputInterface $input,
-        OutputInterface $output,
-        QuestionHelper $helper,
-        ?string $savedDevice = null,
-        string $prompt = 'Target device',
-        ?string $excludeDevice = null
-    ): ?string {
-        [$exit, $json] = $this->runCmd('lsblk -J -d -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL 2>/dev/null');
-        $devices = [];
-        if ($exit === 0 && trim($json) !== '') {
-            $data = json_decode($json, true);
-            foreach ($data['blockdevices'] ?? [] as $dev) {
-                if (($dev['type'] ?? '') === 'disk') {
-                    $devices[] = $dev;
-                }
-            }
-        }
-
-        if (empty($devices)) {
-            $savedHint = $savedDevice ? " [<info>$savedDevice</info>]" : '';
-            $q = new Question(
-                "<question>$prompt (e.g. /dev/sdb):</question>".$savedHint.' ',
-                $savedDevice
-            );
-            $answer = $helper->ask($input, $output, $q);
-            $answer = ($answer !== null && trim($answer) !== '') ? rtrim(trim($answer), '/') : null;
-
-            return $this->rejectExcludedDevice($answer, $excludeDevice);
-        }
-
-        $choices = [];
-        $deviceMap = [];
-        $defaultIdx = 0;
-        foreach ($devices as $dev) {
-            $path = '/dev/'.$dev['name'];
-            if ($excludeDevice !== null && $path === $excludeDevice) {
-                continue;
-            }
-            $parts = array_filter([
-                $dev['tran'] ?? '',
-                trim((string)($dev['vendor'] ?? '')),
-                trim((string)($dev['model'] ?? '')),
-            ]);
-            $label = sprintf('/dev/%-12s  %6s  %s', $dev['name'], $dev['size'], implode(' ', $parts));
-            $choices[] = $label;
-            $deviceMap[$label] = $path;
-            if ($savedDevice !== null && $path === $savedDevice) {
-                $defaultIdx = count($choices) - 1;
-            }
-        }
-        $choices[] = 'Enter path manually';
-
-        $defaultLabel = $savedDevice !== null && $defaultIdx < count(
-            $choices
-        ) - 1 ? " [<info>$savedDevice</info>]" : '';
-        $q = new ChoiceQuestion("<question>$prompt:</question>$defaultLabel", $choices, $defaultIdx);
-        $chosen = $helper->ask($input, $output, $q);
-
-        if ($chosen === 'Enter path manually') {
-            $q = new Question('<question>Device path (e.g. /dev/sdb):</question> ');
-            $answer = $helper->ask($input, $output, $q);
-            $answer = ($answer !== null && trim($answer) !== '') ? rtrim(trim($answer), '/') : null;
-
-            return $this->rejectExcludedDevice($answer, $excludeDevice);
-        }
-
-        return $deviceMap[$chosen];
-    }
-
     private function runCmd(string $cmd, bool $passthru = false, ?OutputInterface $output = null): array
     {
         return $this->runner->run(
@@ -958,1118 +967,6 @@ class UsbSetupCommand extends BaseCommand
             ($passthru && $output !== null) ? static fn(string $chunk) => $output->write($chunk) : null,
             $output !== null ? static fn(string $chunk) => $output->getErrorOutput()->write($chunk) : null,
         );
-    }
-
-    private function rejectExcludedDevice(?string $device, ?string $excludeDevice): ?string
-    {
-        if ($device !== null && $excludeDevice !== null && $device === $excludeDevice) {
-            $this->io->error('Source and target must be different devices.');
-
-            return null;
-        }
-
-        return $device;
-    }
-
-    private function checkAndRecordDeviceName(
-        InputInterface $input,
-        OutputInterface $output,
-        QuestionHelper $helper,
-        string $device,
-        array $config,
-        bool $interactive,
-        bool $skipConfirm,
-        string $configKeyPrefix = ''
-    ): ?string {
-        $info = $this->lsblkInfo($device);
-        $deviceDesc = $device;
-        if (!empty($info)) {
-            $parts = array_filter([$info['vendor'] ?? '', $info['model'] ?? '', $info['size'] ?? '']);
-            $deviceDesc .= ' ('.implode(' ', $parts).')';
-        }
-
-        $currentDeviceName = trim(implode(' ', array_filter([
-            $info['tran'] ?? '',
-            trim((string)($info['vendor'] ?? '')),
-            trim((string)($info['model'] ?? '')),
-        ])));
-
-        $outcome = self::deviceNameCheckOutcome($config, $configKeyPrefix, $device, $currentDeviceName);
-        $savedDeviceName = $config[$configKeyPrefix.'device_name'] ?? null;
-
-        $warned = $outcome !== 'silent';
-        if ($outcome === 'warn_missing') {
-            $this->io->warning(
-                "No recorded name on file for $device from a previous run (currently detected as ".
-                "\"$currentDeviceName\") — cannot verify this is still the same physical drive."
-            );
-        } elseif ($outcome === 'warn_mismatch') {
-            $this->io->warning(
-                "Device $device now shows as \"$currentDeviceName\", but was \"$savedDeviceName\" last time — ".
-                'device letters can shift across reboots/replugging.'
-            );
-        }
-
-        if ($warned && $interactive && !$skipConfirm) {
-            $q = new ConfirmationQuestion('Continue with this device anyway? [yes/NO] ', false, '/^yes$/i');
-            if (!$helper->ask($input, $output, $q)) {
-                $this->io->note('Aborted.');
-
-                return null;
-            }
-        }
-
-        if ($interactive) {
-            $this->saveConfig(
-                array_merge($this->loadConfig(), [$configKeyPrefix.'device_name' => $currentDeviceName])
-            );
-        }
-
-        return $deviceDesc;
-    }
-
-    private function lsblkInfo(string $device): array
-    {
-        [$exit, $out] = $this->runCmd(
-            'lsblk -J -o NAME,SIZE,TYPE,TRAN,VENDOR,MODEL,MOUNTPOINT '.escapeshellarg($device).' 2>/dev/null'
-        );
-        if ($exit !== 0 || trim($out) === '') {
-            return [];
-        }
-        $json = json_decode($out, true);
-
-        return is_array($json) ? ($json['blockdevices'][0] ?? []) : [];
-    }
-
-    /**
-     * Decides how checkAndRecordDeviceName reacts to the saved-vs-detected device name.
-     * Pure — unit-testable.
-     *
-     * @return string 'silent'|'warn_missing'|'warn_mismatch'
-     */
-    private static function deviceNameCheckOutcome(
-        array $config,
-        string $configKeyPrefix,
-        string $device,
-        string $currentDeviceName
-    ): string {
-        $sameDeviceAsSaved = ($config[$configKeyPrefix.'device'] ?? null) === $device;
-        $hasSavedDeviceName = array_key_exists($configKeyPrefix.'device_name', $config);
-        $savedDeviceName = $config[$configKeyPrefix.'device_name'] ?? null;
-
-        if ($sameDeviceAsSaved && !$hasSavedDeviceName) {
-            return 'warn_missing';
-        }
-        if (
-            $sameDeviceAsSaved
-            && $savedDeviceName !== null
-            && $savedDeviceName !== ''
-            && $savedDeviceName !== $currentDeviceName
-        ) {
-            return 'warn_mismatch';
-        }
-
-        return 'silent';
-    }
-
-    private function getMountedPartitions(string $device): array
-    {
-        // /proc/1/mounts reflects the HOST's mount table when pid:host is set in docker-compose;
-        // fall back to the container's own /proc/mounts otherwise.
-        $mounts = @file('/proc/1/mounts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
-            ?: @file('/proc/mounts', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES)
-                ?: [];
-        $result = [];
-        foreach ($mounts as $line) {
-            $parts = preg_split('/\s+/', $line);
-            if (isset($parts[0], $parts[1]) && str_starts_with($parts[0], $device)) {
-                $result[] = [$parts[0], $parts[1]];
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * Ventoy always leaves a second (VTOYEFI) partition behind. Detected via lsblk (sysfs-backed,
-     * reliable inside the container) with a /dev-node fallback when lsblk yields nothing.
-     */
-    private function hasVentoyPartition(string $device): bool
-    {
-        $info = $this->lsblkInfo($device);
-        if (!empty($info)) {
-            return count(self::partitionNames($info)) >= 2;
-        }
-
-        return file_exists(self::partitionPath($device, 2));
-    }
-
-    /**
-     * Extracts partition names from a single lsblk -J blockdevice entry. Pure — unit-testable.
-     */
-    private static function partitionNames(array $lsblkInfo): array
-    {
-        $names = [];
-        foreach ($lsblkInfo['children'] ?? [] as $child) {
-            if (is_array($child) && ($child['type'] ?? null) === 'part' && isset($child['name'])) {
-                $names[] = (string)$child['name'];
-            }
-        }
-
-        return $names;
-    }
-
-    /**
-     * Kernel partition naming: devices whose name ends in a digit (nvme0n1, mmcblk0, loop0)
-     * get a 'p' separator before the partition number; others (sdb) do not. Pure — unit-testable.
-     */
-    private static function partitionPath(string $device, int $number): string
-    {
-        return $device.(preg_match('/\d$/', $device) === 1 ? 'p' : '').$number;
-    }
-
-    /**
-     * Validates the duplicate-mode source device: must differ from the target, exist, look like a
-     * set-up Ventoy stick, and not be swapped with the target after replugging. Returns the device
-     * description on success, or a Command exit code (SUCCESS = user aborted, FAILURE = invalid).
-     */
-    private function validateSourceDevice(
-        InputInterface $input,
-        OutputInterface $output,
-        QuestionHelper $helper,
-        string $sourceDevice,
-        string $device,
-        array $config,
-        bool $skipConfirm
-    ): int|string {
-        if ($sourceDevice === $device) {
-            $this->io->error('Source and target must be different devices.');
-
-            return Command::FAILURE;
-        }
-        if (!file_exists($sourceDevice)) {
-            $this->io->error("Source device not found: $sourceDevice");
-
-            return Command::FAILURE;
-        }
-        if (!preg_match('#^/dev/[a-z][a-z0-9]*$#', $sourceDevice)) {
-            $this->io->error(
-                "Source device must be a top-level block device like /dev/sdb or /dev/nvme0n1, got: $sourceDevice"
-            );
-
-            return Command::FAILURE;
-        }
-
-        $sourceDeviceDesc = $this->checkAndRecordDeviceName(
-            $input,
-            $output,
-            $helper,
-            $sourceDevice,
-            $config,
-            $input->isInteractive(),
-            $skipConfirm,
-            'source_'
-        );
-        if ($sourceDeviceDesc === null) {
-            return Command::SUCCESS;
-        }
-
-        // Letters may have swapped after replugging: today's TARGET was the SOURCE of the previous run.
-        if (($config['source_device'] ?? null) === $device) {
-            $this->io->warning(
-                "Target $device was the SOURCE device of the previous run — device letters may have swapped ".
-                'after replugging. Double-check which stick is which before wiping.'
-            );
-            if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue with these devices anyway? [yes/NO] ', false, '/^yes$/i');
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
-
-                    return Command::SUCCESS;
-                }
-            }
-        }
-
-        if (!$this->hasVentoyPartition($sourceDevice)) {
-            $this->io->error(
-                "Source $sourceDevice does not look like a set-up Ventoy stick ".
-                '(missing VTOYEFI partition '.self::partitionPath($sourceDevice, 2).').'
-            );
-
-            return Command::FAILURE;
-        }
-        $sourcePartition = self::partitionPath($sourceDevice, 1);
-        if (!$this->isFat32Ventoy($sourcePartition)) {
-            $this->io->warning(
-                "Source partition $sourcePartition is not FAT32 labelled VENTOY (maybe reformatted as exFAT?) ".
-                '— its contents will be mirrored as-is.'
-            );
-            if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue with this source anyway? [yes/NO] ', false, '/^yes$/i');
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
-
-                    return Command::SUCCESS;
-                }
-            }
-        }
-
-        $mountedParts = $this->getMountedPartitions($sourceDevice);
-        if (!empty($mountedParts)) {
-            $lines = [
-                "Partitions of source $sourceDevice are mounted on the host system — ".
-                'concurrent writes could corrupt the copy; unmount them first:',
-            ];
-            foreach ($mountedParts as [$part, $mountpoint]) {
-                $lines[] = "  sudo umount $part   (mounted at $mountpoint)";
-            }
-            $this->io->warning($lines);
-            if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue anyway? [yes/NO] ', false, '/^yes$/i');
-                if (!$helper->ask($input, $output, $q)) {
-                    $this->io->note('Aborted.');
-
-                    return Command::SUCCESS;
-                }
-            }
-        }
-
-        return $sourceDeviceDesc;
-    }
-
-    private function isFat32Ventoy(string $partition, string $label = 'VENTOY'): bool
-    {
-        [$exit, $type] = $this->runCmd('blkid -o value -s TYPE '.escapeshellarg($partition).' 2>/dev/null');
-        if ($exit !== 0 || strtolower(trim($type)) !== 'vfat') {
-            return false;
-        }
-        [$exit, $actual] = $this->runCmd('blkid -o value -s LABEL '.escapeshellarg($partition).' 2>/dev/null');
-
-        return $exit === 0 && trim($actual) === $label;
-    }
-
-    private function downloadDebianIso(string $variant, OutputInterface $output, string $cacheDir): string
-    {
-        if (!$this->ensureDirectory($cacheDir, 0755)) {
-            throw new RuntimeException("Cannot create ISO cache directory: $cacheDir");
-        }
-
-        $baseUrl = 'https://cdimage.debian.org/debian-cd/current-live/amd64/iso-hybrid/';
-
-        $this->io->text("Fetching ISO listing from $baseUrl ...");
-        [$exit, $html] = $this->runCmd('curl -fsSL '.escapeshellarg($baseUrl), false, $output);
-        if ($exit !== 0 || trim($html) === '') {
-            throw new RuntimeException('Failed to fetch Debian ISO listing.');
-        }
-
-        $pattern = '/href="(debian-live-[\d.]+-amd64-'.preg_quote($variant, '/').'\.iso)"/';
-        if (!preg_match($pattern, $html, $m)) {
-            throw new RuntimeException("No Debian live ISO found for variant '$variant'.");
-        }
-
-        $filename = $m[1];
-        $url = $baseUrl.$filename;
-        $dest = rtrim($cacheDir, '/').'/'.$filename;
-        $checksumUrl = $baseUrl.'SHA256SUMS';
-
-        $this->io->text('Fetching checksums...');
-        [$exit, $sums] = $this->runCmd('curl -fsSL '.escapeshellarg($checksumUrl), false, $output);
-        if ($exit !== 0 || trim($sums) === '') {
-            throw new RuntimeException('Failed to fetch SHA256SUMS.');
-        }
-        $expected = self::parseChecksum($sums, $filename);
-        if ($expected === null) {
-            throw new RuntimeException("No checksum found for $filename in SHA256SUMS.");
-        }
-
-        if (is_file($dest)) {
-            $this->io->text('Verifying cached ISO...');
-            if ($this->sha256($dest, $output) === $expected) {
-                $this->io->text("Cached ISO verified: $dest");
-
-                return $dest;
-            }
-            $this->io->warning('Cached ISO is corrupt or incomplete — re-downloading.');
-            @unlink($dest);
-        }
-
-        $this->io->text("Downloading $filename (this may take a while)...");
-        [$exit] = $this->runCmd(
-            'curl -fL -# -o '.escapeshellarg($dest).' '.escapeshellarg($url),
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            @unlink($dest);
-            throw new RuntimeException("Failed to download $url");
-        }
-
-        $this->io->text('Verifying download...');
-        if ($this->sha256($dest, $output) !== $expected) {
-            @unlink($dest);
-            throw new RuntimeException('Checksum mismatch after download — file deleted.');
-        }
-
-        $this->io->text("Download verified. Saved to $dest");
-
-        return $dest;
-    }
-
-    private static function parseChecksum(string $sumsContent, string $filename): ?string
-    {
-        foreach (explode("\n", $sumsContent) as $line) {
-            $parts = preg_split('/\s+/', trim($line), 2);
-            if (isset($parts[1]) && trim($parts[1], '* ') === $filename) {
-                return strtolower($parts[0]);
-            }
-        }
-
-        return null;
-    }
-
-    private function sha256(string $path, OutputInterface $output): string
-    {
-        [$exit, $out] = $this->runCmd('sha256sum '.escapeshellarg($path), false, $output);
-        if ($exit !== 0) {
-            throw new RuntimeException("sha256sum failed on $path");
-        }
-
-        return strtolower(explode(' ', trim($out))[0]);
-    }
-
-    private function requireBin(string $bin): string
-    {
-        [$exit, $out] = $this->runCmd('which '.escapeshellarg($bin).' 2>/dev/null');
-        if ($exit !== 0 || trim($out) === '') {
-            throw new RuntimeException("Required binary not found: {$bin}");
-        }
-
-        return trim($out);
-    }
-
-    private function findVentoyBin(?string $hint): string
-    {
-        $candidates = array_filter([
-            $hint,
-            getenv('VENTOY_BIN') ?: null,
-            '/opt/ventoy/Ventoy2Disk.sh',
-            '/usr/share/ventoy/Ventoy2Disk.sh',
-            '/usr/lib/ventoy/Ventoy2Disk.sh',
-        ]);
-        foreach ($candidates as $path) {
-            if (is_file($path) && is_executable($path)) {
-                return $path;
-            }
-        }
-        [$exit, $out] = $this->runCmd('which ventoy 2>/dev/null');
-        if ($exit === 0 && trim($out) !== '') {
-            return trim($out);
-        }
-        throw new RuntimeException(
-            "Ventoy not found. Install it or pass --ventoy-bin /path/to/Ventoy2Disk.sh.\n".
-            '  Download: https://github.com/ventoy/Ventoy/releases'
-        );
-    }
-
-    protected function waitForPartition(string $part, int $timeoutSec = 10): void
-    {
-        $deadline = time() + $timeoutSec;
-        while (!file_exists($part) && time() < $deadline) {
-            usleep(300000);
-        }
-        if (!file_exists($part)) {
-            throw new RuntimeException("Partition {$part} did not appear within {$timeoutSec}s.");
-        }
-    }
-
-    private function mountPartition(
-        string $partition,
-        OutputInterface $output,
-        string $suffix = '',
-        bool $readOnly = false
-    ): string {
-        $mount = sys_get_temp_dir().'/usb_setup_'.getmypid().($suffix !== '' ? '_'.$suffix : '');
-        if (!$this->ensureDirectory($mount, 0700)) {
-            throw new RuntimeException("Cannot create mount point {$mount}.");
-        }
-        [$exit] = $this->runCmd(
-            'mount '.($readOnly ? '-o ro ' : '').escapeshellarg($partition).' '.escapeshellarg($mount).' 2>&1',
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            throw new RuntimeException("Failed to mount {$partition} at {$mount}.");
-        }
-
-        return $mount;
-    }
-
-    private function unmountAndClean(string $mount): void
-    {
-        $this->runCmd('umount '.escapeshellarg($mount).' 2>/dev/null');
-        @rmdir($mount);
-    }
-
-    /**
-     * Data-partition capacity of the target via blockdev: partition 1 directly if probeable
-     * (already-partitioned stick), otherwise estimated from the whole-disk size. 0 = unknown.
-     */
-    private function targetDataCapacityBytes(string $device): int
-    {
-        [$exit, $out] = $this->runCmd(
-            'blockdev --getsize64 '.escapeshellarg(self::partitionPath($device, 1)).' 2>/dev/null'
-        );
-        if ($exit === 0 && trim($out) !== '') {
-            return (int)trim($out);
-        }
-        [$exit, $out] = $this->runCmd('blockdev --getsize64 '.escapeshellarg($device).' 2>/dev/null');
-
-        return ($exit === 0 && trim($out) !== '')
-            ? self::estimateDataPartitionBytes((int)trim($out))
-            : 0;
-    }
-
-    /**
-     * Estimates the data-partition capacity of a Ventoy stick from the whole-disk size: Ventoy
-     * reserves a 32 MiB VTOYEFI partition plus ~1 MiB alignment. Pure — unit-testable.
-     */
-    private static function estimateDataPartitionBytes(int $wholeDiskBytes): int
-    {
-        return max(0, $wholeDiskBytes - 34603008);
-    }
-
-    /**
-     * Whether a payload of $sourceUsedBytes fits a target of $targetCapacityBytes, leaving 2%
-     * FAT cluster/metadata slack plus a fixed 64 MiB margin. Pure — unit-testable.
-     */
-    private static function fitsOnTarget(int $sourceUsedBytes, int $targetCapacityBytes): bool
-    {
-        return $sourceUsedBytes + intdiv($sourceUsedBytes, 50) + 67108864 <= $targetCapacityBytes;
-    }
-
-    private function prepareSoftwareDownloads(string $downloadsFile, OutputInterface $output, string $cacheDir): array
-    {
-        $classified = $this->parseDownloadsFile($downloadsFile);
-
-        foreach ($classified['torrent'] as $line) {
-            $this->io->note("Torrent link recognized but not yet supported (planned for a future release): $line");
-        }
-        foreach ($classified['invalid'] as $line) {
-            $this->io->warning(
-                'Skipping invalid downloads-file line (expected http(s)://, magnet:, urn:btmh:, '.
-                "an existing local file/directory path, or a 'dir/**' recursive directory path): $line"
-            );
-        }
-
-        $files = $this->collectLocalFiles($classified['local']);
-        if ($files !== []) {
-            $this->io->text(sprintf('Found %d locally-provided file(s).', count($files)));
-        }
-
-        if ($classified['http'] === [] && $files === []) {
-            $this->io->text('No software downloads queued.');
-
-            return [];
-        }
-
-        foreach ($classified['http'] as $url) {
-            try {
-                $dest = $this->downloadSoftwareFile($url, $output, $cacheDir);
-                $files[] = ['source' => $dest, 'relative' => basename($dest)];
-            } catch (RuntimeException $e) {
-                $this->io->warning("Skipping $url — ".$e->getMessage());
-            }
-        }
-
-        return $files;
-    }
-
-    /**
-     * @return array{
-     *     http: string[],
-     *     torrent: string[],
-     *     local: array<array{path: string, recursive: bool}>,
-     *     invalid: string[]
-     * }
-     */
-    private function parseDownloadsFile(string $path): array
-    {
-        $lines = array_values(
-            array_filter(
-                array_map('trim', file($path)),
-                static fn($l) => $l !== '' && $l[0] !== '#'
-            )
-        );
-
-        $result = ['http' => [], 'torrent' => [], 'local' => [], 'invalid' => []];
-        foreach ($lines as $line) {
-            $c = self::classifyDownloadLine($line, 'is_file', 'is_dir');
-            if ($c['type'] === 'local') {
-                $result['local'][] = ['path' => $c['path'], 'recursive' => $c['recursive']];
-            } else {
-                $result[$c['type']][] = $line;
-            }
-        }
-
-        return $result;
-    }
-
-    /**
-     * Classify one downloads-file line. Pure except for the injected $isFile/$isDir probes,
-     * so the URL/torrent/recursive-suffix logic is unit-testable with stub callables.
-     *
-     * @param callable(string): bool $isFile
-     * @param callable(string): bool $isDir
-     * @return array{type: 'http'|'torrent'|'local'|'invalid', path: string, recursive: bool}
-     */
-    private static function classifyDownloadLine(string $line, callable $isFile, callable $isDir): array
-    {
-        if (preg_match('#^https?://#i', $line)) {
-            return ['type' => 'http', 'path' => $line, 'recursive' => false];
-        }
-        if (preg_match('#^(magnet:|urn:btmh:)#i', $line)) {
-            return ['type' => 'torrent', 'path' => $line, 'recursive' => false];
-        }
-        if (str_ends_with($line, '/**') && $isDir(substr($line, 0, -3))) {
-            return ['type' => 'local', 'path' => substr($line, 0, -3), 'recursive' => true];
-        }
-        if ($isFile($line) || $isDir($line)) {
-            return ['type' => 'local', 'path' => $line, 'recursive' => false];
-        }
-
-        return ['type' => 'invalid', 'path' => $line, 'recursive' => false];
-    }
-
-    /**
-     * @param array<array{path: string, recursive: bool}> $entries
-     *
-     * @return array<array{source: string, relative: string}>
-     */
-    private function collectLocalFiles(array $entries): array
-    {
-        $files = [];
-        foreach ($entries as $entry) {
-            $path = $entry['path'];
-            if (!is_dir($path)) {
-                $files[] = ['source' => $path, 'relative' => basename($path)];
-                continue;
-            }
-
-            if (!$entry['recursive']) {
-                foreach (glob(rtrim($path, '/').'/*') ?: [] as $child) {
-                    if (is_file($child)) {
-                        $files[] = ['source' => $child, 'relative' => basename($child)];
-                    }
-                }
-                continue;
-            }
-
-            $root = rtrim($path, '/');
-            $iterator = new RecursiveIteratorIterator(
-                new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS)
-            );
-            foreach ($iterator as $fileInfo) {
-                if (!$fileInfo->isFile()) {
-                    continue;
-                }
-                $relative = ltrim(substr($fileInfo->getPathname(), strlen($root)), '/');
-                $files[] = ['source' => $fileInfo->getPathname(), 'relative' => $relative];
-            }
-        }
-
-        return $files;
-    }
-
-    private function downloadSoftwareFile(string $url, OutputInterface $output, string $cacheDir): string
-    {
-        if (!$this->ensureDirectory($cacheDir, 0755)) {
-            throw new RuntimeException("Cannot create download cache directory: $cacheDir");
-        }
-
-        $filename = basename((string)parse_url($url, PHP_URL_PATH));
-        if ($filename === '' || $filename === '/') {
-            throw new RuntimeException("Cannot determine filename from URL: $url");
-        }
-        $dest = rtrim($cacheDir, '/').'/'.$filename;
-
-        if (is_file($dest) && filesize($dest) > 0) {
-            $this->io->text("Already cached (no checksum available to verify) — skipping: $filename");
-
-            return $dest;
-        }
-
-        $headerFile = $dest.'.headers';
-        $this->io->text("Downloading $filename ...");
-        [$exit] = $this->runCmd(
-            'curl -fL -# -D '.escapeshellarg($headerFile).' -o '.escapeshellarg($dest).' '.escapeshellarg($url),
-            true,
-            $output
-        );
-        $contentType = $this->lastContentType($headerFile);
-        @unlink($headerFile);
-        if ($exit !== 0) {
-            @unlink($dest);
-            throw new RuntimeException("Failed to download $url");
-        }
-        if (self::shouldRejectAsHtml($contentType)) {
-            @unlink($dest);
-            throw new RuntimeException(
-                "Refusing $url — server returned Content-Type \"$contentType\" instead of a binary file ".
-                '(likely a login/session-gated page, not a direct download link).'
-            );
-        }
-
-        $this->io->text("Downloaded: $dest");
-
-        return $dest;
-    }
-
-    private function lastContentType(string $headerFile): ?string
-    {
-        if (!is_file($headerFile)) {
-            return null;
-        }
-
-        return self::parseLastContentType(file($headerFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
-    }
-
-    /**
-     * Return the LAST Content-Type value across header lines (curl -D accumulates headers over
-     * redirects, so the final response's type is the one that matters). Pure — unit-testable.
-     *
-     * @param string[] $headerLines
-     */
-    private static function parseLastContentType(array $headerLines): ?string
-    {
-        $type = null;
-        foreach ($headerLines as $line) {
-            if (preg_match('/^content-type:\s*(.+)$/i', trim($line), $m)) {
-                $type = trim($m[1]);
-            }
-        }
-
-        return $type;
-    }
-
-    /**
-     * A binary download must not have a text/* Content-Type — that signals a login/session-gated
-     * HTML page rather than the installer. Pure — unit-testable.
-     */
-    private static function shouldRejectAsHtml(?string $contentType): bool
-    {
-        return $contentType !== null && preg_match('#^text/#i', $contentType) === 1;
-    }
-
-    /**
-     * Estimates the bytes the configuration-path payload will occupy on the stick: ISO plus its
-     * persistence image (persistence.dat is only created alongside an ISO), plus all prepared
-     * software files. $fileSize is injected (filesize) so the math is pure — unit-testable.
-     *
-     * @param list<array{source: string, relative: string}> $softwareFiles
-     */
-    private static function estimateConfigurationPayloadBytes(
-        ?string $debianIso,
-        int $persistenceMib,
-        array $softwareFiles,
-        callable $fileSize
-    ): int {
-        $total = 0;
-        if ($debianIso !== null) {
-            $total += (int)$fileSize($debianIso) + $persistenceMib * 1048576;
-        }
-        foreach ($softwareFiles as $file) {
-            $total += (int)$fileSize($file['source']);
-        }
-
-        return $total;
-    }
-
-    private function installVentoy(
-        string $ventoyBin,
-        string $device,
-        OutputInterface $output,
-        bool $update = false
-    ): void {
-        $flag = $update ? '-u' : '-I';
-        $this->io->text($update ? "Updating Ventoy on $device..." : "Installing Ventoy onto $device (MBR mode)...");
-        // Ventoy2Disk.sh builds its tool PATH from the caller's CWD, so it must run from its own
-        // directory. Its own y/n prompts always get "yes" — this command already double-confirmed,
-        // and runCmd closes stdin, which would otherwise EOF-abort the install.
-        $ventoyDir = dirname($ventoyBin);
-        $cmd = 'cd '.escapeshellarg($ventoyDir).' && yes 2>/dev/null | bash ./'.basename($ventoyBin)
-            ." $flag ".escapeshellarg($device);
-        [$exit, $out] = $this->runCmd($cmd, true, $output);
-        if (self::ventoyRunFailed($exit, $out)) {
-            throw new RuntimeException(
-                "Ventoy installation failed (exit {$exit}) — see {$ventoyDir}/log.txt for details."
-            );
-        }
-        $this->runCmd('udevadm settle 2>/dev/null');
-        sleep(2);
-        foreach ([1, 2] as $n) {
-            $part = escapeshellarg(self::partitionPath($device, $n));
-            // Unmount from the host mount namespace (pid:host lets nsenter target host PID 1)
-            $this->runCmd("nsenter -t 1 --mount -- umount -f $part 2>/dev/null");
-            // Also unmount from within the container namespace and kill any holder processes
-            $this->runCmd('fuser -km '.$part.' 2>/dev/null');
-            $this->runCmd('umount -f '.$part.' 2>/dev/null');
-        }
-        $this->runCmd('partprobe '.escapeshellarg($device).' 2>/dev/null');
-        $this->runCmd('udevadm settle 2>/dev/null');
-
-        // A real Ventoy install always leaves the 32 MiB VTOYEFI partition 2 behind.
-        $vtoyefiPartition = self::partitionPath($device, 2);
-        try {
-            $this->waitForPartition($vtoyefiPartition);
-        } catch (RuntimeException) {
-            throw new RuntimeException(
-                "Ventoy reported success but $vtoyefiPartition (VTOYEFI) never appeared — ".
-                "installation did not happen. See {$ventoyDir}/log.txt for details."
-            );
-        }
-    }
-
-    /**
-     * Ventoy2Disk.sh swallows the worker's exit code, so exit 0 is not proof of success —
-     * known failure messages in the output count as failure too. Pure — unit-testable.
-     */
-    private static function ventoyRunFailed(int $exit, string $out): bool
-    {
-        return $exit !== 0
-            || str_contains($out, 'Some tools can not run')
-            || str_contains($out, 'does not contain Ventoy');
-    }
-
-    private function reformatFat32(string $partition, OutputInterface $output, string $label = 'VENTOY'): void
-    {
-        $this->io->text("Reformatting $partition as FAT32...");
-        $this->waitForPartition($partition);
-
-        $exit = 1;
-        $partArg = escapeshellarg($partition);
-        for ($attempt = 1; $attempt <= 4; $attempt++) {
-            $this->runCmd("nsenter -t 1 --mount -- umount -f $partArg 2>/dev/null");
-            $this->runCmd('fuser -km '.$partArg.' 2>/dev/null');
-            $this->runCmd('umount -f '.$partArg.' 2>/dev/null');
-            $this->runCmd('udevadm settle 2>/dev/null');
-            [$exit] = $this->runCmd(
-                'mkfs.fat -F 32 -n '.escapeshellarg($label).' '.escapeshellarg($partition).' 2>&1',
-                true,
-                $output
-            );
-            if ($exit === 0) {
-                break;
-            }
-            $this->io->text("Partition busy, retrying in {$attempt}s...");
-            sleep($attempt);
-        }
-
-        if ($exit !== 0) {
-            throw new RuntimeException(
-                "mkfs.fat failed on $partition after retries — the partition is likely still held by the host OS.\n".
-                "Unmount it on the HOST (not inside ddev) and try again:\n".
-                "  sudo umount $partition"
-            );
-        }
-    }
-
-    /**
-     * Mirrors the source stick's data partition onto the target with rsync. With $withDelete a
-     * dry run first previews the changes and asks for confirmation when files would be deleted
-     * from the target. Returns false when the user declines.
-     */
-    private function mirrorDataPartition(
-        string $srcMount,
-        string $dstMount,
-        bool $withDelete,
-        bool $skipConfirm,
-        InputInterface $input,
-        OutputInterface $output,
-        QuestionHelper $helper
-    ): bool {
-        if ($withDelete) {
-            $this->io->text('Computing changes (rsync dry run)...');
-            [$exit, $out] = $this->runCmd(self::buildRsyncCommand($srcMount, $dstMount, true, true));
-            if ($exit !== 0) {
-                throw new RuntimeException("rsync dry run failed (exit $exit).");
-            }
-            $summary = self::summarizeRsyncItemized($out);
-            $this->io->text(
-                sprintf(
-                    'Mirror will add %d, change %d and delete %d item(s).',
-                    count($summary['added']),
-                    count($summary['changed']),
-                    count($summary['deleted'])
-                )
-            );
-            if ($summary['deleted'] !== []) {
-                $lines = array_slice($summary['deleted'], 0, 20);
-                if (count($summary['deleted']) > 20) {
-                    $lines[] = sprintf('... and %d more', count($summary['deleted']) - 20);
-                }
-                $this->io->warning(
-                    array_merge(
-                        ['These files/directories exist only on the target and will be DELETED:'],
-                        $lines
-                    )
-                );
-                if (!$skipConfirm) {
-                    $q = new ConfirmationQuestion(
-                        'Proceed with mirror (including deletions)? [yes/NO] ',
-                        false,
-                        '/^yes$/i'
-                    );
-                    if (!$helper->ask($input, $output, $q)) {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        $this->io->text('Mirroring data partition from source stick...');
-        [$exit] = $this->runCmd(self::buildRsyncCommand($srcMount, $dstMount, $withDelete, false), true, $output);
-        if ($exit !== 0) {
-            throw new RuntimeException("rsync failed (exit $exit) while mirroring the data partition.");
-        }
-        $this->io->text('Data partition mirrored.');
-
-        return true;
-    }
-
-    /**
-     * Builds the rsync command line for the stick-to-stick mirror. -rt instead of -a because vfat
-     * has no owner/permission/symlink support; --modify-window=1 because FAT stores mtimes with
-     * 2-second granularity (without it every file would re-copy on --update); --inplace so a
-     * changed multi-GiB persistence.dat does not need temp+old copies simultaneously on a nearly
-     * full stick; --max-size matches the FAT32 single-file limit enforced elsewhere. Pure —
-     * unit-testable.
-     */
-    private static function buildRsyncCommand(string $srcMount, string $dstMount, bool $delete, bool $dryRun): string
-    {
-        $cmd = 'rsync -rt --modify-window=1 --max-size=4090m';
-        foreach (self::RSYNC_EXCLUDES as $exclude) {
-            $cmd .= ' --exclude='.escapeshellarg($exclude);
-        }
-        if ($delete) {
-            $cmd .= ' --delete';
-        }
-        if ($dryRun) {
-            $cmd .= ' --dry-run --itemize-changes';
-        } else {
-            // --outbuf=L line-flushes --info=progress2 through the (non-tty) pipe to runCmd
-            $cmd .= ' --inplace --outbuf=L --info=progress2';
-        }
-
-        return $cmd.' '.escapeshellarg(rtrim($srcMount, '/').'/').' '.escapeshellarg(rtrim($dstMount, '/').'/');
-    }
-
-    /**
-     * Buckets rsync --dry-run --itemize-changes output into deleted/added/changed paths. Pure —
-     * unit-testable.
-     *
-     * @return array{deleted: string[], added: string[], changed: string[]}
-     */
-    private static function summarizeRsyncItemized(string $out): array
-    {
-        $result = ['deleted' => [], 'added' => [], 'changed' => []];
-        foreach (preg_split('/\r?\n/', $out) ?: [] as $line) {
-            if (preg_match('/^\*deleting\s+(.+)$/', $line, $m)) {
-                $result['deleted'][] = $m[1];
-            } elseif (preg_match('/^cd\+{9}\s+(.+)$/', $line, $m)) {
-                $result['added'][] = $m[1];
-            } elseif (preg_match('/^>f(\S{9})\s+(.+)$/', $line, $m)) {
-                $result[$m[1] === '+++++++++' ? 'added' : 'changed'][] = $m[2];
-            }
-        }
-
-        return $result;
-    }
-
-    private function isoMatchesOnStick(string $mountPoint, string $isoName, string $localIsoPath): bool
-    {
-        $dest = rtrim($mountPoint, '/').'/'.$isoName;
-
-        return is_file($dest) && is_file($localIsoPath) && filesize($dest) === filesize($localIsoPath);
-    }
-
-    private function copyIso(string $isoPath, string $mountPoint, OutputInterface $output): string
-    {
-        $dest = rtrim($mountPoint, '/').'/'.basename($isoPath);
-        $isoSizeMb = filesize($isoPath) / 1048576;
-        if ($isoSizeMb > 4090) {
-            throw new RuntimeException(
-                "ISO exceeds ~4 GiB FAT32 single-file limit ({$isoSizeMb} MiB) — refusing to copy."
-            );
-        }
-        $this->io->text(sprintf('Copying %s to USB (%d MiB)...', basename($isoPath), (int)round($isoSizeMb)));
-        [$exit] = $this->runCmd(
-            'cp --no-preserve=all '.escapeshellarg($isoPath).' '.escapeshellarg($dest).' 2>&1',
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            throw new RuntimeException('Failed to copy ISO to USB.');
-        }
-
-        return basename($isoPath);
-    }
-
-    private function isPersistenceValid(string $mountPoint, int $expectedMib): bool
-    {
-        $datFile = rtrim($mountPoint, '/').'/persistence.dat';
-        if (!is_file($datFile)) {
-            return false;
-        }
-        [$exit, $type] = $this->runCmd('blkid -o value -s TYPE '.escapeshellarg($datFile).' 2>/dev/null');
-        if ($exit !== 0 || trim($type) !== 'ext4') {
-            return false;
-        }
-        [$exit, $label] = $this->runCmd('blkid -o value -s LABEL '.escapeshellarg($datFile).' 2>/dev/null');
-        if ($exit !== 0 || trim($label) !== 'persistence') {
-            return false;
-        }
-
-        // Allow ±10 MiB tolerance for filesystem overhead
-        return abs((int)(filesize($datFile) / 1048576) - $expectedMib) <= 10;
-    }
-
-    private function createPersistenceFile(string $mountPoint, int $sizeMib, OutputInterface $output): string
-    {
-        $datFile = rtrim($mountPoint, '/').'/persistence.dat';
-        if ($sizeMib > 4090) {
-            $this->io->warning("Persistence size {$sizeMib} MiB exceeds FAT32 limit. Capping at 4090 MiB.");
-            $sizeMib = 4090;
-        }
-        $this->io->text("Creating persistence file ({$sizeMib} MiB)...");
-        [$exit] = $this->runCmd(
-            'fallocate -l '.escapeshellarg("{$sizeMib}M").' '.escapeshellarg($datFile).' 2>&1',
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            $this->io->warning('fallocate failed, falling back to dd (slower)...');
-            [$exit] = $this->runCmd(
-                'dd if=/dev/zero of='.escapeshellarg($datFile).' bs=1M count='.$sizeMib.' 2>&1',
-                true,
-                $output
-            );
-            if ($exit !== 0) {
-                throw new RuntimeException('Failed to create persistence file.');
-            }
-        }
-        $this->io->text('Formatting persistence file as ext4...');
-        [$exit] = $this->runCmd(
-            'mkfs.ext4 -L persistence -F '.escapeshellarg($datFile).' 2>&1',
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            throw new RuntimeException('mkfs.ext4 failed on persistence file.');
-        }
-        $tmpMount = sys_get_temp_dir().'/persist_'.getmypid();
-        if (!$this->ensureDirectory($tmpMount, 0700)) {
-            throw new RuntimeException("Cannot create temp mount {$tmpMount}.");
-        }
-        [$exit] = $this->runCmd(
-            'mount -o loop '.escapeshellarg($datFile).' '.escapeshellarg($tmpMount).' 2>&1',
-            true,
-            $output
-        );
-        if ($exit !== 0) {
-            @rmdir($tmpMount);
-            throw new RuntimeException('Failed to loop-mount persistence file.');
-        }
-        file_put_contents($tmpMount.'/persistence.conf', "/ union\n");
-        $this->io->text('Written /persistence.conf inside persistence file.');
-        $this->runCmd('umount '.escapeshellarg($tmpMount).' 2>/dev/null');
-        @rmdir($tmpMount);
-
-        return 'persistence.dat';
-    }
-
-    private function ventoyJsonHasEntry(string $mountPoint, string $isoName): bool
-    {
-        $jsonPath = rtrim($mountPoint, '/').'/ventoy/ventoy.json';
-        if (!is_file($jsonPath)) {
-            return false;
-        }
-        $data = json_decode((string)file_get_contents($jsonPath), true);
-        if (!is_array($data)) {
-            return false;
-        }
-        foreach ($data['persistence'] ?? [] as $entry) {
-            if (($entry['image'] ?? '') === '/'.$isoName) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function writeVentoyJson(string $mountPoint, string $isoName, string $persistenceDat): void
-    {
-        $ventoyDir = rtrim($mountPoint, '/').'/ventoy';
-        if (!$this->ensureDirectory($ventoyDir, 0755)) {
-            throw new RuntimeException('Cannot create /ventoy directory on USB.');
-        }
-        $jsonPath = $ventoyDir.'/ventoy.json';
-        $existing = [];
-        if (is_file($jsonPath)) {
-            $existing = json_decode((string)file_get_contents($jsonPath), true) ?? [];
-        }
-        $existing['persistence'][] = [
-            'image' => '/'.$isoName,
-            'backend' => '/'.$persistenceDat,
-        ];
-        $json = json_encode($existing, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)."\n";
-        file_put_contents($jsonPath, $json);
-        $this->io->text(['Written /ventoy/ventoy.json:', $json]);
-    }
-
-    /**
-     * @param array<array{source: string, relative: string}> $files
-     */
-    private function copySoftwareFiles(
-        array $files,
-        string $mountPoint,
-        OutputInterface $output,
-        bool $isUpdate
-    ): void {
-        $dir = rtrim($mountPoint, '/').'/software';
-        if (!$this->ensureDirectory($dir, 0755)) {
-            throw new RuntimeException('Cannot create /software directory on USB.');
-        }
-
-        foreach ($files as $file) {
-            $source = $file['source'];
-            $relative = $file['relative'];
-            $destDir = dirname($dir.'/'.$relative);
-            if (!$this->ensureDirectory($destDir, 0755)) {
-                $this->io->warning("Cannot create destination directory for $relative on USB — skipping.");
-                continue;
-            }
-            if ($isUpdate && $this->isoMatchesOnStick($dir, $relative, $source)) {
-                $this->io->text("$relative already on stick — skipping copy.");
-                continue;
-            }
-            $sizeMb = filesize($source) / 1048576;
-            if ($sizeMb > 4090) {
-                $this->io->warning(
-                    "Skipping $relative — exceeds ~4 GiB FAT32 single-file limit ({$sizeMb} MiB)."
-                );
-                continue;
-            }
-            $this->io->text(sprintf('Copying %s to /software/ (%d MiB)...', $relative, (int)round($sizeMb)));
-            $dest = $dir.'/'.$relative;
-            [$exit] = $this->runCmd(
-                'cp --no-preserve=all '.escapeshellarg($source).' '.escapeshellarg($dest).' 2>&1',
-                true,
-                $output
-            );
-            if ($exit !== 0) {
-                $this->io->warning("Failed to copy $relative to USB — skipping.");
-            }
-        }
     }
 
     protected function getConfigPath(): string
