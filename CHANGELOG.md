@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-12
+
+### Added
+
+- Test coverage for `IsoPayloadManager`, `SoftwareDownloadsManager` (both previously mostly untested), the
+  `DeviceInspector::promptForDevice`/`checkAndRecordDeviceName` branches, `IsoDownloader` error branches, and
+  `UsbSetupCommand`'s interactive device-prompt, configuration (local ISO + persistence + software), and
+  duplicate/source-device mirror flows — closing the gaps noted in `TODO.md` item 1. Overall `src/` line coverage
+  75% → 90% (pcov, measured locally; CI still runs with `coverage: none`)
+
 ## [0.6.1] - 2026-07-12
 
 ### Changed

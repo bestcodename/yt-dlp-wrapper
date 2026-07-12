@@ -179,6 +179,116 @@ final class DeviceInspectorTest extends TestCase
         ];
     }
 
+    public function testCheckAndRecordDeviceNameDeclinedReturnsNull(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $inspector = self::make($fake);
+
+        $result = $inspector->checkAndRecordDeviceName(
+            self::interactiveInput("no\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            '/dev/sdb',
+            ['device' => '/dev/sdb', 'device_name' => 'usb Old Stick'],
+            true,
+            false
+        );
+
+        self::assertNull($result);
+    }
+
+    private static function make(
+        FakeProcessRunner $runner,
+        ?Closure $updateConfig = null,
+        ?Closure $fileExists = null,
+        ?array $mountsFileCandidates = null,
+    ): DeviceInspector {
+        $args = [
+            $runner,
+            $updateConfig ?? static function (array $u): void {
+            },
+            $fileExists,
+        ];
+        if ($mountsFileCandidates !== null) {
+            $args[] = $mountsFileCandidates;
+        }
+
+        return new DeviceInspector(...$args);
+    }
+
+    private static function interactiveInput(string $answers): ArrayInput
+    {
+        $input = new ArrayInput([]);
+        $stream = fopen('php://memory', 'r+');
+        fwrite($stream, $answers);
+        rewind($stream);
+        $input->setStream($stream);
+        $input->setInteractive(true);
+
+        return $input;
+    }
+
+    private static function io(): SymfonyStyle
+    {
+        return new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
+    }
+
+    public function testCheckAndRecordDeviceNameNonInteractiveSkipsPromptAndConfigUpdate(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $updateConfigCalls = [];
+        $inspector = self::make(
+            $fake,
+            updateConfig: static function (array $u) use (&$updateConfigCalls): void {
+                $updateConfigCalls[] = $u;
+            }
+        );
+
+        $result = $inspector->checkAndRecordDeviceName(
+            self::interactiveInput(''),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            '/dev/sdb',
+            ['device' => '/dev/sdb'], // warn_missing outcome, but non-interactive: no prompt, no update
+            false,
+            false
+        );
+
+        self::assertNotNull($result);
+        self::assertSame([], $updateConfigCalls);
+    }
+
+    public function testCheckAndRecordDeviceNameSkipConfirmBypassesPrompt(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $updateConfigCalls = [];
+        $inspector = self::make(
+            $fake,
+            updateConfig: static function (array $u) use (&$updateConfigCalls): void {
+                $updateConfigCalls[] = $u;
+            }
+        );
+
+        $result = $inspector->checkAndRecordDeviceName(
+            self::interactiveInput(''), // no answer needed: skipConfirm bypasses the question
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            '/dev/sdb',
+            ['device' => '/dev/sdb', 'device_name' => 'usb Old Stick'],
+            true,
+            true
+        );
+
+        self::assertNotNull($result);
+        self::assertCount(1, $updateConfigCalls);
+    }
+
     #[DataProvider('deviceNameCheckOutcomeProvider')]
     public function testDeviceNameCheckOutcome(
         array $config,
@@ -218,25 +328,6 @@ final class DeviceInspectorTest extends TestCase
         } finally {
             @unlink($fallback);
         }
-    }
-
-    private static function make(
-        FakeProcessRunner $runner,
-        ?Closure $updateConfig = null,
-        ?Closure $fileExists = null,
-        ?array $mountsFileCandidates = null,
-    ): DeviceInspector {
-        $args = [
-            $runner,
-            $updateConfig ?? static function (array $u): void {
-            },
-            $fileExists,
-        ];
-        if ($mountsFileCandidates !== null) {
-            $args[] = $mountsFileCandidates;
-        }
-
-        return new DeviceInspector(...$args);
     }
 
     /**
@@ -410,6 +501,183 @@ final class DeviceInspectorTest extends TestCase
         self::assertSame($expected, DeviceInspector::partitionPath($device, $number));
     }
 
+    public function testPromptForDeviceDefaultSelectionOnEmptyInput(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            '/dev/sdc'
+        );
+
+        self::assertSame('/dev/sdc', $result);
+    }
+
+    private static function twoDisksJson(): string
+    {
+        return '{"blockdevices":[{"name":"sdb","size":"14.9G","type":"disk","tran":"usb",'
+            .'"vendor":"FakeVend","model":"FakeModel"},{"name":"sdc","size":"32G","type":"disk","tran":"usb",'
+            .'"vendor":"OtherVend","model":"OtherModel"}]}';
+    }
+
+    public function testPromptForDeviceEnterPathManually(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("2\n/dev/sdz\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame('/dev/sdz', $result);
+    }
+
+    public function testPromptForDeviceExcludesDeviceFromChoiceList(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("0\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            null,
+            'Target device',
+            '/dev/sdb'
+        );
+
+        self::assertSame('/dev/sdc', $result);
+    }
+
+    public function testPromptForDeviceListsDevicesAndSelectsByIndex(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 0, self::twoDisksJson());
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("1\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame('/dev/sdc', $result);
+    }
+
+    public function testPromptForDeviceNoDevicesDefaultsToSavedDevice(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io(),
+            '/dev/sdy'
+        );
+
+        self::assertSame('/dev/sdy', $result);
+    }
+
+    public function testPromptForDeviceNoDevicesEmptyAnswerReturnsNull(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertNull($result);
+    }
+
+    public function testPromptForDeviceNoDevicesExcludedAnswerRejected(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+        $input = self::interactiveInput("/dev/sdz\n");
+        $output = new BufferedOutput();
+        $io = new SymfonyStyle($input, $output);
+
+        $result = $inspector->promptForDevice(
+            $input,
+            $output,
+            new QuestionHelper(),
+            $io,
+            null,
+            'Target device',
+            '/dev/sdz'
+        );
+
+        self::assertNull($result);
+        self::assertStringContainsString('Source and target must be different devices.', $output->fetch());
+    }
+
+    // --- rejectExcludedDevice ---
+
+    public function testPromptForDeviceNoDevicesReturnsTypedAnswer(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -J -d', 1, '');
+        $inspector = self::make($fake);
+
+        $result = $inspector->promptForDevice(
+            self::interactiveInput("/dev/sdz\n"),
+            new BufferedOutput(),
+            new QuestionHelper(),
+            self::io()
+        );
+
+        self::assertSame('/dev/sdz', $result);
+    }
+
+    public function testRejectExcludedDeviceDifferentReturnsDevice(): void
+    {
+        $inspector = self::make(new FakeProcessRunner());
+
+        self::assertSame('/dev/sdb', $inspector->rejectExcludedDevice('/dev/sdb', '/dev/sdc', self::io()));
+    }
+
+    public function testRejectExcludedDeviceNullDeviceReturnsNull(): void
+    {
+        $inspector = self::make(new FakeProcessRunner());
+
+        self::assertNull($inspector->rejectExcludedDevice(null, '/dev/sdc', self::io()));
+    }
+
+    // --- promptForDevice ---
+
+    public function testRejectExcludedDeviceSameReturnsNullWithError(): void
+    {
+        $inspector = self::make(new FakeProcessRunner());
+        $output = new BufferedOutput();
+        $io = new SymfonyStyle(new ArrayInput([]), $output);
+
+        $result = $inspector->rejectExcludedDevice('/dev/sdb', '/dev/sdb', $io);
+
+        self::assertNull($result);
+        self::assertStringContainsString('Source and target must be different devices.', $output->fetch());
+    }
+
     public function testTargetDataCapacityBytesFallsBackToWholeDevice(): void
     {
         $fake = new FakeProcessRunner();
@@ -481,23 +749,6 @@ final class DeviceInspectorTest extends TestCase
         };
     }
 
-    private static function interactiveInput(string $answers): ArrayInput
-    {
-        $input = new ArrayInput([]);
-        $stream = fopen('php://memory', 'r+');
-        fwrite($stream, $answers);
-        rewind($stream);
-        $input->setStream($stream);
-        $input->setInteractive(true);
-
-        return $input;
-    }
-
-    private static function io(): SymfonyStyle
-    {
-        return new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
-    }
-
     public function testValidateSourceDeviceMissingDeviceFails(): void
     {
         $inspector = self::make(new FakeProcessRunner());
@@ -557,6 +808,8 @@ final class DeviceInspectorTest extends TestCase
 
         self::assertSame(Command::SUCCESS, $result);
     }
+
+    // --- checkAndRecordDeviceName ---
 
     public function testValidateSourceDeviceSameAsTargetFails(): void
     {

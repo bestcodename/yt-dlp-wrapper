@@ -70,6 +70,100 @@ final class UsbSetupCommandFlowTest extends TestCase
         ];
     }
 
+    public function testConfigurationPathCopiesIsoPersistenceAndSoftwareOntoStick(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $iso = tempnam(sys_get_temp_dir(), 'usb_setup_flow_iso_').'.iso';
+        file_put_contents($iso, 'fake-iso-bytes');
+        $softwareFile = tempnam(sys_get_temp_dir(), 'usb_setup_flow_software_');
+        file_put_contents($softwareFile, 'fake-installer-bytes');
+        $downloadsFile = tempnam(sys_get_temp_dir(), 'usb_setup_flow_downloads_');
+        file_put_contents($downloadsFile, $softwareFile."\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1'];
+
+        try {
+            // scratch mode, skip Ventoy, payload=configuration (default), ISO="local path",
+            // ISO path, persistence size, downloads file, then 2x wipe confirm
+            $tester->setInputs(['1', '1', '', '1', $iso, '64', $downloadsFile, 'yes', 'yes']);
+            $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
+            self::assertStringNotContainsString('Data partition mirrored.', $display); // not duplicate mode
+            self::assertStringContainsString('USB stick is ready.', $display);
+            self::assertStringContainsString('1 software installer(s) copied to /software/', $display);
+            self::assertTrue($fake->ran('cp --no-preserve=all '.escapeshellarg($iso)));
+            self::assertTrue($fake->ran('fallocate'));
+            self::assertTrue($fake->ran('mkfs.ext4'));
+            self::assertTrue($fake->ran('cp --no-preserve=all '.escapeshellarg($softwareFile)));
+
+            $mount = sys_get_temp_dir().'/usb_setup_'.getmypid();
+            self::assertFileExists($mount.'/ventoy/ventoy.json');
+            $ventoyJson = json_decode((string)file_get_contents($mount.'/ventoy/ventoy.json'), true);
+            self::assertSame('/'.basename($iso), $ventoyJson['persistence'][0]['image'] ?? null);
+        } finally {
+            self::cleanupMountPoints();
+            @unlink($iso);
+            @unlink($softwareFile);
+            @unlink($downloadsFile);
+        }
+    }
+
+    private function makeFake(string $lsblkJson, string $fstype = 'vfat'): FakeProcessRunner
+    {
+        return (new FakeProcessRunner())
+            ->on('lsblk -J -o NAME,', 0, $lsblkJson)
+            ->on('which ', 0, "/usr/bin/stub\n")
+            ->on('blkid -o value -s TYPE', 0, "$fstype\n")
+            ->on('blkid -o value -s LABEL', 0, "VENTOY\n")
+            ->on('bash ./', 0, "Ventoy install finished\n");
+    }
+
+    private function makeTester(FakeProcessRunner $fake): CommandTester
+    {
+        $app = new Application();
+        $this->command = new TestableUsbSetupCommand($this->configPath, $fake);
+        $app->addCommand($this->command);
+
+        return new CommandTester($this->command);
+    }
+
+    private function display(CommandTester $tester): string
+    {
+        return (string)preg_replace('/\s+/', ' ', $tester->getDisplay());
+    }
+
+    /**
+     * usb_setup_<pid>[_suffix] mount points are deterministic (PartitionFormatter::mount ties
+     * them to getmypid(), not a per-call unique id), so any test that actually writes real
+     * content into the mount block must clean up afterwards or it leaks into the next test that
+     * mounts to the same path within this process.
+     */
+    private static function cleanupMountPoints(): void
+    {
+        self::rmrf(sys_get_temp_dir().'/usb_setup_'.getmypid());
+        self::rmrf(sys_get_temp_dir().'/usb_setup_'.getmypid().'_src');
+        self::rmrf(sys_get_temp_dir().'/persist_'.getmypid());
+    }
+
+    private static function rmrf(string $dir): void
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+        foreach (scandir($dir) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $dir.'/'.$entry;
+            is_dir($path) ? self::rmrf($path) : unlink($path);
+        }
+        rmdir($dir);
+    }
+
     public function testConfigurationPayloadCapacityWarningDeclinedAborts(): void
     {
         file_put_contents($this->configPath, "{}\n");
@@ -98,30 +192,6 @@ final class UsbSetupCommandFlowTest extends TestCase
             @unlink($payload);
             @unlink($downloadsFile);
         }
-    }
-
-    private function makeFake(string $lsblkJson, string $fstype = 'vfat'): FakeProcessRunner
-    {
-        return (new FakeProcessRunner())
-            ->on('lsblk -J -o NAME,', 0, $lsblkJson)
-            ->on('which ', 0, "/usr/bin/stub\n")
-            ->on('blkid -o value -s TYPE', 0, "$fstype\n")
-            ->on('blkid -o value -s LABEL', 0, "VENTOY\n")
-            ->on('bash ./', 0, "Ventoy install finished\n");
-    }
-
-    private function makeTester(FakeProcessRunner $fake): CommandTester
-    {
-        $app = new Application();
-        $this->command = new TestableUsbSetupCommand($this->configPath, $fake);
-        $app->addCommand($this->command);
-
-        return new CommandTester($this->command);
-    }
-
-    private function display(CommandTester $tester): string
-    {
-        return (string)preg_replace('/\s+/', ' ', $tester->getDisplay());
     }
 
     public function testDeviceNameMismatchDeclinedAborts(): void
@@ -263,6 +333,35 @@ final class UsbSetupCommandFlowTest extends TestCase
         }
     }
 
+    public function testDuplicateModeMirrorsSourceStickOntoTarget(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1', '/dev/zero1'];
+
+        try {
+            // scratch mode, skip Ventoy, [no payload prompt: --source-device pre-set],
+            // [no ISO/persistence/downloads prompts: duplicate mode skips them], 2x wipe confirm
+            $tester->setInputs(['1', '1', 'yes', 'yes']);
+            $exit = $tester->execute(
+                ['--device' => '/dev/null', '--source-device' => '/dev/zero'],
+                ['interactive' => true]
+            );
+
+            self::assertSame(Command::SUCCESS, $exit);
+            $display = $this->display($tester);
+            self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
+            self::assertStringContainsString('Data partition mirrored.', $display);
+            self::assertStringContainsString('USB stick is ready.', $display);
+            self::assertStringContainsString('Payload duplicated from /dev/zero.', $display);
+            self::assertTrue($fake->ran('rsync -rt'));
+            self::assertFalse($fake->ran('--dry-run')); // scratch mode: no delete pass needed
+        } finally {
+            self::cleanupMountPoints();
+        }
+    }
+
     public function testEnvDeviceActsLikeCliOption(): void
     {
         putenv('USB_DEVICE=/dev/null');
@@ -291,6 +390,23 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertStringNotContainsString('Ventoy:', $display);
         self::assertStringContainsString('Ventoy install skipped.', $display);
         self::assertFalse($this->savedConfig()['install_ventoy'] ?? null);
+    }
+
+    public function testInteractiveDevicePromptWhenOptionOmitted(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $tester = $this->makeTester($this->makeFake(self::LSBLK_VENTOY));
+
+        // device prompt (no lsblk -d listing stubbed => falls back to free-text entry), then
+        // mode default (update, Ventoy detected), skip Ventoy, payload default, ISO skip,
+        // no downloads, single update confirm
+        $tester->setInputs(['/dev/null', '', '1', '', '2', '-', 'yes']);
+        $exit = $tester->execute([], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $display = $this->display($tester);
+        self::assertStringNotContainsString('--device is required', $display);
+        self::assertSame('/dev/null', $this->savedConfig()['device'] ?? null);
     }
 
     public function testInvalidIsoVariantFails(): void
