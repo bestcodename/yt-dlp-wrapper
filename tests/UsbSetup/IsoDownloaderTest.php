@@ -63,6 +63,64 @@ final class IsoDownloaderTest extends TestCase
         return new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
     }
 
+    public function testDownloadFailureThrows(): void
+    {
+        $cacheDir = sys_get_temp_dir().'/usb_setup_iso_test_'.uniqid('', true);
+        $iso = 'debian-live-12.5.0-amd64-standard.iso';
+        $fake = new FakeProcessRunner();
+        $fake->on('curl -fsSL', 0, '<a href="'.$iso.'">'.$iso.'</a>');
+        $fake->on('curl -fsSL', 0, "abc123  $iso\n");
+        $fake->on('curl -fL -# -o', 1, '');
+        $downloader = new IsoDownloader($fake);
+
+        try {
+            $this->expectException(RuntimeException::class);
+            $this->expectExceptionMessageMatches('/Failed to download/');
+            $downloader('standard', new BufferedOutput(), self::io(), $cacheDir);
+        } finally {
+            @unlink("$cacheDir/$iso");
+            @rmdir($cacheDir);
+        }
+    }
+
+    public function testDownloadedChecksumMismatchThrows(): void
+    {
+        $cacheDir = sys_get_temp_dir().'/usb_setup_iso_test_'.uniqid('', true);
+        $iso = 'debian-live-12.5.0-amd64-standard.iso';
+        $fake = new FakeProcessRunner();
+        $fake->on('curl -fsSL', 0, '<a href="'.$iso.'">'.$iso.'</a>');
+        $fake->on('curl -fsSL', 0, "abc123  $iso\n");
+        $fake->on('sha256sum', 0, "badbad  $cacheDir/$iso\n");
+        $downloader = new IsoDownloader($fake);
+
+        try {
+            $this->expectException(RuntimeException::class);
+            $this->expectExceptionMessageMatches('/Checksum mismatch after download/');
+            $downloader('standard', new BufferedOutput(), self::io(), $cacheDir);
+        } finally {
+            @unlink("$cacheDir/$iso");
+            @rmdir($cacheDir);
+        }
+    }
+
+    public function testFetchChecksumsFailureThrows(): void
+    {
+        $cacheDir = sys_get_temp_dir().'/usb_setup_iso_test_'.uniqid('', true);
+        $iso = 'debian-live-12.5.0-amd64-standard.iso';
+        $fake = new FakeProcessRunner();
+        $fake->on('curl -fsSL', 0, '<a href="'.$iso.'">'.$iso.'</a>');
+        $fake->on('curl -fsSL', 22, '');
+        $downloader = new IsoDownloader($fake);
+
+        try {
+            $this->expectException(RuntimeException::class);
+            $this->expectExceptionMessageMatches('/Failed to fetch SHA256SUMS/');
+            $downloader('standard', new BufferedOutput(), self::io(), $cacheDir);
+        } finally {
+            @rmdir($cacheDir);
+        }
+    }
+
     public function testFreshDownload(): void
     {
         $cacheDir = sys_get_temp_dir().'/usb_setup_iso_test_'.uniqid('', true);
