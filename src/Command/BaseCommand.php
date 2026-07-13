@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\Console\PromptHint;
 use App\Process\ProcessRunner;
 use App\Process\ProcOpenProcessRunner;
 use JsonException;
@@ -48,14 +49,18 @@ abstract class BaseCommand extends Command
         array $choices,
         string|int|null $default = null,
         string $suffix = '',
+        ?string $cliOption = null,
+        ?string $envVar = null,
+        ?string $configKey = null,
     ): string {
         $idx = is_int($default) ? $default : 0;
         if (is_string($default)) {
             $found = array_search($default, $choices, true);
             $idx = $found !== false ? $found : 0;
         }
+        $hint = PromptHint::build($cliOption, $envVar, $configKey);
         $q = new ChoiceQuestion(
-            "<question>$label:</question> [<info>{$choices[$idx]}</info>]".$suffix,
+            "<question>$label:</question> [<info>{$choices[$idx]}</info>]".$hint.$suffix,
             $choices,
             $idx
         );
@@ -78,11 +83,15 @@ abstract class BaseCommand extends Command
         bool $skipConfirm = false,
         bool $skipValue = true,
         string $trueAnswerRegex = '/^y/i',
+        ?string $cliOption = null,
+        ?string $envVar = null,
+        ?string $configKey = null,
     ): bool {
         if ($skipConfirm) {
             return $skipValue;
         }
-        $q = new ConfirmationQuestion($prompt, $default, $trueAnswerRegex);
+        $hint = PromptHint::build($cliOption, $envVar, $configKey);
+        $q = new ConfirmationQuestion(rtrim($prompt).$hint.' ', $default, $trueAnswerRegex);
 
         /** @var QuestionHelper $helper */
         $helper = $this->getHelper('question');
@@ -100,9 +109,13 @@ abstract class BaseCommand extends Command
         string $label,
         ?string $default = null,
         ?callable $validator = null,
+        ?string $cliOption = null,
+        ?string $envVar = null,
+        ?string $configKey = null,
     ): mixed {
         $prompt = $label
             .($default !== null && $default !== '' ? " [<info>$default</info>]" : '')
+            .PromptHint::build($cliOption, $envVar, $configKey)
             .': ';
         $q = new Question($prompt, $default);
         if ($validator !== null) {

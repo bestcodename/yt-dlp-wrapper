@@ -127,34 +127,35 @@ ddev exec bin/console playlists:sync
 Resolution order for every row: CLI option → env var → `config/playlists-sync.json` key → prompt (where marked) →
 default (see [Configuration & parameter resolution](#configuration--parameter-resolution)).
 
-| Parameter            | CLI option                | Env var                 | Config key              | Prompted when                                                              | Default                                        |
-|----------------------|---------------------------|-------------------------|-------------------------|----------------------------------------------------------------------------|------------------------------------------------|
-| Input file           | `--input` / `-i`          | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                     | `config/playlists.txt`                         |
-| Output dir           | `--out` / `-o`            | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                     | `./downloads`                                  |
-| M3U8 dir             | `--playlists-dir`         | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                      | `OUT/playlists`                                |
-| Playlist layout      | `--playlist-layout`       | `PLAYLIST_LAYOUT`       | `playlist_layout`       | when unresolved, every interactive run                                     | `flat`                                         |
-| Min est. ODG         | `--min-odg`               | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)    | off                                            |
-| Min ODG mode         | `--min-odg-mode`          | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given | `warn`                                         |
-| Formats              | `--formats`               | `FORMATS`               | `formats`               | every interactive run unless `--formats` is given                          | `original,mp3,wav,flac`                        |
-| MP3 mode             | `--mp3-mode`              | `MP3_MODE`              | `mp3_mode`              | never                                                                      | `cbr`                                          |
-| MP3 bitrate (CBR)    | `--mp3-bitrate`           | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                      | `320` kbps                                     |
-| MP3 quality (VBR)    | `--mp3-quality`           | `MP3_QUALITY`           | `mp3_quality`           | never                                                                      | `0` (LAME VBR highest)                         |
-| Library dir          | `--library-dir`           | `LIBRARY_DIR`           | `library_dir`           | never                                                                      | `OUT/library`                                  |
-| Archive dir          | `--archive-dir`           | `ARCHIVE_DIR`           | `archive_dir`           | never                                                                      | `OUT/.archive`                                 |
-| Filename template    | `--lib-filename-template` | `LIB_FILENAME_TEMPLATE` | `lib_filename_template` | never                                                                      | `%(id)s - %(title)s`                           |
-| yt-dlp binary        | `--ytdlp-bin`             | `YTDLP_BIN`             | `ytdlp_bin`             | never                                                                      | `yt-dlp`                                       |
-| spotdl binary        | `--spotdl-bin`            | `SPOTDL_BIN`            | `spotdl_bin`            | never                                                                      | `spotdl`                                       |
-| ffmpeg binary        | `--ffmpeg-bin`            | `FFMPEG_BIN`            | `ffmpeg_bin`            | never                                                                      | `ffmpeg`                                       |
-| ffprobe binary       | `--ffprobe-bin`           | `FFPROBE_BIN`           | `ffprobe_bin`           | never                                                                      | `ffprobe`                                      |
-| Cookies (both tools) | `--cookies`               | `COOKIES_FILE`          | `cookies_file`          | never                                                                      | `config/cookies.txt` (used if the file exists) |
-| yt-dlp cookies       | `--ytdlp-cookies`         | `YTDLP_COOKIE_FILE`     | `ytdlp_cookie_file`     | never                                                                      | falls back to Cookies                          |
-| spotdl cookies       | `--spotdl-cookies`        | `SPOTDL_COOKIE_FILE`    | `spotdl_cookie_file`    | never                                                                      | falls back to Cookies                          |
-| Extractor retries    | `--extractor-retries`     | `EXTRACTOR_RETRIES`     | `extractor_retries`     | never                                                                      | `10`                                           |
-| Retry sleep          | `--retry-sleep`           | `RETRY_SLEEP`           | `retry_sleep`           | never                                                                      | `exp=2:10:120`                                 |
-| Sleep requests       | `--sleep-requests`        | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                      | `2`                                            |
-| Rate limit           | `--limit-rate`            | `LIMIT_RATE`            | `limit_rate`            | never                                                                      | off                                            |
-| Pause between        | `--pause-between`         | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                      | `2`                                            |
-| JS runtimes          | `--js-runtimes`           | `JS_RUNTIMES`           | `js_runtimes`           | never                                                                      | `node`                                         |
+| Parameter            | CLI option                | Env var                 | Config key              | Prompted when                                                                | Default                                        |
+|----------------------|---------------------------|-------------------------|-------------------------|------------------------------------------------------------------------------|------------------------------------------------|
+| Input file           | `--input` / `-i`          | `INPUT_FILE`            | `input_file`            | when unresolved, every interactive run                                       | `config/playlists.txt`                         |
+| Output dir           | `--out` / `-o`            | `OUTPUT_DIR`            | `output_dir`            | when unresolved, every interactive run                                       | `./downloads`                                  |
+| M3U8 dir             | `--playlists-dir`         | `PLAYLISTS_DIR`         | `playlists_dir`         | never                                                                        | `OUT/playlists`                                |
+| Playlist layout      | `--playlist-layout`       | `PLAYLIST_LAYOUT`       | `playlist_layout`       | when unresolved, every interactive run                                       | `flat`                                         |
+| Min est. ODG         | `--min-odg`               | `MIN_ODG`               | `min_odg`               | once, when configured nowhere (guided tier prompt; answer is persisted)      | off                                            |
+| Min ODG mode         | `--min-odg-mode`          | `MIN_ODG_MODE`          | `min_odg_mode`          | every interactive run while a minimum is active and no CLI option is given   | `warn`                                         |
+| Low-quality grouping | `--low-quality-group-by`  | `LOW_QUALITY_GROUP_BY`  | `low_quality_group_by`  | once, while a minimum is active and configured nowhere (answer is persisted) | `tier`                                         |
+| Formats              | `--formats`               | `FORMATS`               | `formats`               | every interactive run unless `--formats` is given                            | `original,mp3,wav,flac`                        |
+| MP3 mode             | `--mp3-mode`              | `MP3_MODE`              | `mp3_mode`              | never                                                                        | `cbr`                                          |
+| MP3 bitrate (CBR)    | `--mp3-bitrate`           | `MP3_BITRATE`           | `mp3_bitrate`           | never                                                                        | `320` kbps                                     |
+| MP3 quality (VBR)    | `--mp3-quality`           | `MP3_QUALITY`           | `mp3_quality`           | never                                                                        | `0` (LAME VBR highest)                         |
+| Library dir          | `--library-dir`           | `LIBRARY_DIR`           | `library_dir`           | never                                                                        | `OUT/library`                                  |
+| Archive dir          | `--archive-dir`           | `ARCHIVE_DIR`           | `archive_dir`           | never                                                                        | `OUT/.archive`                                 |
+| Filename template    | `--lib-filename-template` | `LIB_FILENAME_TEMPLATE` | `lib_filename_template` | never                                                                        | `%(id)s - %(title)s`                           |
+| yt-dlp binary        | `--ytdlp-bin`             | `YTDLP_BIN`             | `ytdlp_bin`             | never                                                                        | `yt-dlp`                                       |
+| spotdl binary        | `--spotdl-bin`            | `SPOTDL_BIN`            | `spotdl_bin`            | never                                                                        | `spotdl`                                       |
+| ffmpeg binary        | `--ffmpeg-bin`            | `FFMPEG_BIN`            | `ffmpeg_bin`            | never                                                                        | `ffmpeg`                                       |
+| ffprobe binary       | `--ffprobe-bin`           | `FFPROBE_BIN`           | `ffprobe_bin`           | never                                                                        | `ffprobe`                                      |
+| Cookies (both tools) | `--cookies`               | `COOKIES_FILE`          | `cookies_file`          | never                                                                        | `config/cookies.txt` (used if the file exists) |
+| yt-dlp cookies       | `--ytdlp-cookies`         | `YTDLP_COOKIE_FILE`     | `ytdlp_cookie_file`     | never                                                                        | falls back to Cookies                          |
+| spotdl cookies       | `--spotdl-cookies`        | `SPOTDL_COOKIE_FILE`    | `spotdl_cookie_file`    | never                                                                        | falls back to Cookies                          |
+| Extractor retries    | `--extractor-retries`     | `EXTRACTOR_RETRIES`     | `extractor_retries`     | never                                                                        | `10`                                           |
+| Retry sleep          | `--retry-sleep`           | `RETRY_SLEEP`           | `retry_sleep`           | never                                                                        | `exp=2:10:120`                                 |
+| Sleep requests       | `--sleep-requests`        | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                        | `2`                                            |
+| Rate limit           | `--limit-rate`            | `LIMIT_RATE`            | `limit_rate`            | never                                                                        | off                                            |
+| Pause between        | `--pause-between`         | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                        | `2`                                            |
+| JS runtimes          | `--js-runtimes`           | `JS_RUNTIMES`           | `js_runtimes`           | never                                                                        | `node`                                         |
 
 One cookie file (Netscape format holds cookies for multiple domains — e.g. SoundCloud for yt-dlp plus YouTube Music for
 spotdl) serves both tools by default; the per-tool parameters override it individually. A cookie file is only passed on
@@ -188,6 +189,7 @@ MP3_BITRATE=320                 # CBR bitrate in kbps (MP3_MODE=cbr only)
 MP3_QUALITY=0                   # LAME VBR: 0 = highest (~245 kbps), 9 = lowest (MP3_MODE=vbr only)
 MIN_ODG=-2                      # minimum estimated ODG, PEAQ scale -4..0 (unset = off)
 MIN_ODG_MODE=warn               # warn (default) or filter — filter keeps low-quality tracks out of playlists
+LOW_QUALITY_GROUP_BY=tier       # tier (default) or playlist — how the below-ODG summary is grouped
 LIB_FILENAME_TEMPLATE=%(id)s - %(title)s   # yt-dlp sources only; Spotify always uses "{track-id} - {title}"
 
 COOKIES_FILE=config/cookies.txt  # one Netscape cookie file for both yt-dlp and spotdl
@@ -253,6 +255,38 @@ downloads/
     wav/
       <Uploader> - <Playlist Title>.m3u8
 ```
+
+### Low-quality summary
+
+When `--min-odg` is active, tracks below the threshold are listed at the end of the run, worst quality first. Each track
+shows every playlist it belongs to. `--low-quality-group-by` (`LOW_QUALITY_GROUP_BY` / `low_quality_group_by`)
+controls how that list is grouped:
+
+`tier` (default) groups by ODG quality tier, worst tier first:
+
+```
+2 track(s) below est. ODG -1 in the library:
+Below Preview Only (1 track(s)):
+  Old Rip (abc123): 64 kbps mp3, est. ODG -3.7 [DJ - My List]
+Preview Only (1 track(s)):
+  Radio Edit (def456): 96 kbps mp3, est. ODG -1.8 [DJ - My List, Another Set]
+```
+
+`playlist` groups by playlist first, then by tier within each playlist — useful for cleaning up one playlist at a time:
+
+```
+Another Set:
+  Preview Only (1 track(s)):
+    Radio Edit (def456): 96 kbps mp3, est. ODG -1.8 [DJ - My List, Another Set]
+DJ - My List:
+  Below Preview Only (1 track(s)):
+    Old Rip (abc123): 64 kbps mp3, est. ODG -3.7 [DJ - My List]
+  Preview Only (1 track(s)):
+    Radio Edit (def456): 96 kbps mp3, est. ODG -1.8 [DJ - My List, Another Set]
+```
+
+Like `--playlist-layout`, it's prompted once interactively (only while `--min-odg` is active) and the answer is then
+persisted and never asked again.
 
 ### Playlist aliases
 

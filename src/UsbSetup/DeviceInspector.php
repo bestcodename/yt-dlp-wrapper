@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\UsbSetup;
 
+use App\Console\PromptHint;
 use App\Process\ProcessRunner;
 use Closure;
 use Symfony\Component\Console\Command\Command;
@@ -56,13 +57,16 @@ final class DeviceInspector
         ?string $savedDevice = null,
         string $prompt = 'Target device',
         string|array|null $excludeDevice = null,
+        ?string $cliOption = null,
+        ?string $envVar = null,
     ): ?string {
+        $hint = PromptHint::build($cliOption, $envVar);
         $disks = $this->listDisks();
 
         if (empty($disks)) {
             $savedHint = $savedDevice ? " [<info>$savedDevice</info>]" : '';
             $q = new Question(
-                "<question>$prompt (e.g. /dev/sdb):</question>".$savedHint.' ',
+                "<question>$prompt (e.g. /dev/sdb):</question>".$savedHint.$hint.' ',
                 $savedDevice
             );
             $answer = $helper->ask($input, $output, $q);
@@ -83,11 +87,11 @@ final class DeviceInspector
         $defaultLabel = $savedDevice !== null && $defaultIdx < count(
             $choices
         ) - 1 ? " [<info>$savedDevice</info>]" : '';
-        $q = new ChoiceQuestion("<question>$prompt:</question>$defaultLabel", $choices, $defaultIdx);
+        $q = new ChoiceQuestion("<question>$prompt:</question>$defaultLabel".$hint, $choices, $defaultIdx);
         $chosen = $helper->ask($input, $output, $q);
 
         if ($chosen === 'Enter path manually') {
-            $q = new Question('<question>Device path (e.g. /dev/sdb):</question> ');
+            $q = new Question('<question>Device path (e.g. /dev/sdb):</question>'.$hint.' ');
             $answer = $helper->ask($input, $output, $q);
             $answer = ($answer !== null && trim($answer) !== '') ? rtrim(trim($answer), '/') : null;
 
@@ -190,13 +194,16 @@ final class DeviceInspector
         ?array $savedDevices = null,
         string $prompt = 'Target devices',
         array $excludeDevices = [],
+        ?string $cliOption = null,
+        ?string $envVar = null,
     ): array {
+        $hint = PromptHint::build($cliOption, $envVar);
         $disks = $this->listDisks();
 
         if (empty($disks)) {
             $savedHint = $savedDevices ? ' [<info>'.implode(',', $savedDevices).'</info>]' : '';
             $q = new Question(
-                "<question>$prompt (comma-separated, e.g. /dev/sdb,/dev/sdc):</question>".$savedHint.' ',
+                "<question>$prompt (comma-separated, e.g. /dev/sdb,/dev/sdc):</question>".$savedHint.$hint.' ',
                 $savedDevices !== null ? implode(',', $savedDevices) : null
             );
             $answer = $helper->ask($input, $output, $q);
@@ -216,7 +223,7 @@ final class DeviceInspector
         }
         $default = $defaultIndices !== [] ? implode(',', $defaultIndices) : null;
 
-        $q = new ChoiceQuestion("<question>$prompt (comma-separated):</question>", $choices, $default);
+        $q = new ChoiceQuestion("<question>$prompt (comma-separated):</question>".$hint, $choices, $default);
         $q->setMultiselect(true);
         $chosen = (array)$helper->ask($input, $output, $q);
 
@@ -231,7 +238,9 @@ final class DeviceInspector
         }
 
         if ($askManually) {
-            $q = new Question('<question>Device path(s), comma-separated (e.g. /dev/sdb,/dev/sdc):</question> ');
+            $q = new Question(
+                '<question>Device path(s), comma-separated (e.g. /dev/sdb,/dev/sdc):</question>'.$hint.' '
+            );
             $answer = $helper->ask($input, $output, $q);
             $devices = array_merge($devices, self::parseDeviceList($answer));
         }
@@ -378,7 +387,11 @@ final class DeviceInspector
                 'after replugging. Double-check which stick is which before wiping.'
             );
             if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue with these devices anyway? [yes/NO] ', false, '/^yes$/i');
+                $q = new ConfirmationQuestion(
+                    'Continue with these devices anyway? [yes/NO] '.PromptHint::yesFlag().' ',
+                    false,
+                    '/^yes$/i'
+                );
                 if (!$helper->ask($input, $output, $q)) {
                     $io->note('Aborted.');
 
@@ -402,7 +415,11 @@ final class DeviceInspector
                 '— its contents will be mirrored as-is.'
             );
             if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue with this source anyway? [yes/NO] ', false, '/^yes$/i');
+                $q = new ConfirmationQuestion(
+                    'Continue with this source anyway? [yes/NO] '.PromptHint::yesFlag().' ',
+                    false,
+                    '/^yes$/i'
+                );
                 if (!$helper->ask($input, $output, $q)) {
                     $io->note('Aborted.');
 
@@ -422,7 +439,9 @@ final class DeviceInspector
             }
             $io->warning($lines);
             if ($input->isInteractive() && !$skipConfirm) {
-                $q = new ConfirmationQuestion('Continue anyway? [yes/NO] ', false, '/^yes$/i');
+                $q = new ConfirmationQuestion(
+                    'Continue anyway? [yes/NO] '.PromptHint::yesFlag().' ', false, '/^yes$/i'
+                );
                 if (!$helper->ask($input, $output, $q)) {
                     $io->note('Aborted.');
 
@@ -478,7 +497,11 @@ final class DeviceInspector
         }
 
         if ($warned && $interactive && !$skipConfirm) {
-            $q = new ConfirmationQuestion('Continue with this device anyway? [yes/NO] ', false, '/^yes$/i');
+            $q = new ConfirmationQuestion(
+                'Continue with this device anyway? [yes/NO] '.PromptHint::yesFlag().' ',
+                false,
+                '/^yes$/i'
+            );
             if (!$helper->ask($input, $output, $q)) {
                 $io->note('Aborted.');
 

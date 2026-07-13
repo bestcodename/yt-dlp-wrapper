@@ -431,6 +431,9 @@ final class UsbSetupCommandFlowTest extends TestCase
         $display = $this->display($tester);
         self::assertStringNotContainsString('--device is required', $display);
         self::assertSame(['/dev/null'], $this->savedConfig()['devices'] ?? null);
+        self::assertStringContainsString('(--device | USB_DEVICE)', $display);
+        self::assertStringContainsString('(--update | USB_UPDATE)', $display);
+        self::assertStringContainsString('(--yes, -y | USB_YES)', $display);
     }
 
     public function testInteractiveMultiSelectDevicePromptWhenOptionOmitted(): void
