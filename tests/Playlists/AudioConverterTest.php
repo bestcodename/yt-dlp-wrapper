@@ -101,13 +101,41 @@ final class AudioConverterTest extends TestCase
                 ['album' => 'AL'],
                 ['title' => '', 'artist' => '', 'album' => 'AL', 'genre' => '', 'comment' => '', 'date' => ''],
             ],
-            'uploader wins over artist' => [
+            'artist wins over uploader' => [
                 ['uploader' => 'U', 'artist' => 'A'],
+                ['title' => '', 'artist' => 'A', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'creator used when no artist' => [
+                ['uploader' => 'U', 'creator' => 'C'],
+                ['title' => '', 'artist' => 'C', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'uploader used when neither artist nor creator present' => [
+                ['uploader' => 'U'],
                 ['title' => '', 'artist' => 'U', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'channel used as last resort' => [
+                ['channel' => 'Ch'],
+                ['title' => '', 'artist' => 'Ch', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'empty uploader falls through to a valid artist' => [
+                ['uploader' => '', 'artist' => 'A'],
+                ['title' => '', 'artist' => 'A', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
             ],
             'empty json' => [
                 [],
                 ['title' => '', 'artist' => '', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'double-escaped unicode in artist is repaired' => [
+                ['artist' => "Ch\\u00F4K\\u00F4"],
+                ['title' => '', 'artist' => 'ChôKô', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'double-escaped unicode in title is repaired too' => [
+                ['title' => "Ka\\u00EFros", 'uploader' => 'U'],
+                ['title' => 'Kaïros', 'artist' => 'U', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
+            ],
+            'plain string with a literal backslash but no unicode escape is untouched' => [
+                ['artist' => 'AC\\DC'],
+                ['title' => '', 'artist' => 'AC\\DC', 'album' => '', 'genre' => '', 'comment' => '', 'date' => ''],
             ],
         ];
     }

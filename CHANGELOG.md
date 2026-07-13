@@ -6,15 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-07-13
+
+### Fixed
+
+- `playlists:sync` — repaired a double-escaped-unicode data quirk occasionally present in yt-dlp's SoundCloud
+  `.info.json` metadata: e.g. an `artist` value embedded as the literal 15-character text `Ch` + backslash + `u00F4K`
+    + backslash + `u00F4`, instead of the intended "ChôKô" — the sidecar's own JSON escaping decodes correctly, but the
+      source data underneath already contained an extra backslash, leaving the escape sequence as literal text instead
+      of the character it was meant to represent. `AudioConverter::mapInfoJsonToTags()` now repairs any such sequence in
+      every tag field (title, artist, album, genre, comment)
+
+## [0.9.1] - 2026-07-13
+
+### Fixed
+
+- `playlists:sync` — better artist tag resolution: `AudioConverter::mapInfoJsonToTags()` now prefers yt-dlp's explicit
+  `artist`/`creator` music-metadata fields (populated when a video is Content-ID-matched to a real song)
+  over the generic `uploader`/`channel` name, falling back to `uploader`/`channel` when no such field exists (the common
+  case for SoundCloud and plain YouTube videos). Previously `uploader` always won, and a present-but-empty
+  `uploader` value blocked a valid `artist` fallback — both contributed to tracks showing "NA" for artist in Rekordbox.
+  Applies to future downloads/conversions only; already-converted library files are unaffected
+
 ## [0.9.0] - 2026-07-12
 
 ### Added
 
 - `playlists:sync` — new `--playlist-layout` / `PLAYLIST_LAYOUT` / `playlist_layout` option controlling how `.m3u8`
-  files are organized under the playlists directory: `flat` (default, unchanged), `per-playlist` (one subdirectory
-  per playlist containing all requested formats), or `per-format` (one subdirectory per format containing all
-  playlists of that format). It's prompted once interactively when unset anywhere and the answer is then persisted
-  to `config/playlists-sync.json`
+  files are organized under the playlists directory: `flat` (default, unchanged), `per-playlist` (one subdirectory per
+  playlist containing all requested formats), or `per-format` (one subdirectory per format containing all playlists of
+  that format). It's prompted once interactively when unset anywhere and the answer is then persisted to
+  `config/playlists-sync.json`
 
 ### Added
 
@@ -23,8 +45,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `playlists:sync` — `--formats` is now prompted on every interactive run, even when already set via env or config,
-  so the format selection can be changed without editing `config/playlists-sync.json` by hand. Passing `--formats`
+- `playlists:sync` — `--formats` is now prompted on every interactive run, even when already set via env or config, so
+  the format selection can be changed without editing `config/playlists-sync.json` by hand. Passing `--formats`
   explicitly still skips the prompt (and, as before, CLI values are never persisted — only prompt answers are)
 
 ### Fixed
@@ -32,9 +54,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `playlists:sync` — `--min-odg` no longer filters/warns about tracks whose displayed "est. ODG" exactly matches the
   configured threshold. A real-world bitrate a hair under a nominal calibration anchor (e.g. a 128 kbps AAC stream
   actually measured at 127.97 kbps) estimated to an ODG like `-1.0008`, which rounds to the same `-1` shown for the
-  exact anchor but was still being compared at full float precision — silently filtering tracks that looked
-  identical to the threshold and contradicting the documented inclusive "ODG ≥ min" semantics (`MIN_ODG_TIERS`). The
-  comparison (`AudioConverter::isBelowMinOdg`) now rounds both sides to the same 2-decimal precision as the display
+  exact anchor but was still being compared at full float precision — silently filtering tracks that looked identical to
+  the threshold and contradicting the documented inclusive "ODG ≥ min" semantics (`MIN_ODG_TIERS`). The comparison (
+  `AudioConverter::isBelowMinOdg`) now rounds both sides to the same 2-decimal precision as the display
 
 ## [0.8.0] - 2026-07-12
 
@@ -50,20 +72,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `usb:setup` — support for multiple simultaneous destination USB drives: `--device`/`USB_DEVICE` accept a
-  comma-separated list, and the interactive prompt becomes a multi-select. Devices are processed sequentially
-  within one invocation (not in parallel); the ISO download and software downloads are still fetched only once
-  and reused for every device. One device failing does not abort the rest of the batch — a per-device pass/fail
-  summary is printed at the end and the command exits non-zero if any device failed. `DeviceInspector` gained
+  comma-separated list, and the interactive prompt becomes a multi-select. Devices are processed sequentially within one
+  invocation (not in parallel); the ISO download and software downloads are still fetched only once and reused for every
+  device. One device failing does not abort the rest of the batch — a per-device pass/fail summary is printed at the end
+  and the command exits non-zero if any device failed. `DeviceInspector` gained
   `promptForDevices()` (multi-select counterpart to `promptForDevice()`) and its `promptForDevice()`/
-  `rejectExcludedDevice()` now accept `string|array|null` for `$excludeDevice` so a batch of targets can be
-  excluded from the duplicate-mode source-device prompt at once
+  `rejectExcludedDevice()` now accept `string|array|null` for `$excludeDevice` so a batch of targets can be excluded
+  from the duplicate-mode source-device prompt at once
 
 ### Changed
 
-- `usb:setup` config schema: the singular `device`/`device_name` keys are replaced by a `devices` array (prompt
-  default only) plus per-device `dev_<name>_device`/`dev_<name>_device_name` keys, so each target's Ventoy/name
-  history is tracked independently. A pre-existing singular `device` config key is still read as a one-time
-  fallback default for the new multi-select prompt
+- `usb:setup` config schema: the singular `device`/`device_name` keys are replaced by a `devices` array (prompt default
+  only) plus per-device `dev_<name>_device`/`dev_<name>_device_name` keys, so each target's Ventoy/name history is
+  tracked independently. A pre-existing singular `device` config key is still read as a one-time fallback default for
+  the new multi-select prompt
 
 ## [0.6.2] - 2026-07-12
 
@@ -72,8 +94,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Test coverage for `IsoPayloadManager`, `SoftwareDownloadsManager` (both previously mostly untested), the
   `DeviceInspector::promptForDevice`/`checkAndRecordDeviceName` branches, `IsoDownloader` error branches, and
   `UsbSetupCommand`'s interactive device-prompt, configuration (local ISO + persistence + software), and
-  duplicate/source-device mirror flows — closing the gaps noted in `TODO.md` item 1. Overall `src/` line coverage
-  75% → 90% (pcov, measured locally; CI still runs with `coverage: none`)
+  duplicate/source-device mirror flows — closing the gaps noted in `TODO.md` item 1. Overall `src/` line coverage 75% →
+  90% (pcov, measured locally; CI still runs with `coverage: none`)
 
 ## [0.6.1] - 2026-07-12
 
@@ -83,9 +105,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   process-heavy logic into focused, independently-tested service classes, continuing the pattern already used for
   `ProcessRunner`: `App\Playlists\SpotdlDownloader`, `YtDlpDownloader`, `AudioConverter` (ODG-quality logic),
   `DownloadArchive`; `App\UsbSetup\VentoyInstaller`, `PartitionFormatter`, `IsoDownloader`, `DeviceInspector`,
-  `IsoPayloadManager`, `RsyncMirror`, `SoftwareDownloadsManager`; and a shared `App\Process\BinaryChecker`. The
-  Commands now delegate to these classes for option parsing, prompts, and orchestration; no behaviour change.
-  Test suite reorganized to match: the monolithic `tests/Command/UsbSetupCommandTest.php` and
+  `IsoPayloadManager`, `RsyncMirror`, `SoftwareDownloadsManager`; and a shared `App\Process\BinaryChecker`. The Commands
+  now delegate to these classes for option parsing, prompts, and orchestration; no behaviour change. Test suite
+  reorganized to match: the monolithic `tests/Command/UsbSetupCommandTest.php` and
   `UsbSetupCommandProcessTest.php` are replaced by per-class tests under `tests/Playlists/` and `tests/UsbSetup/`
 
 ## [0.6.0] - 2026-07-12
@@ -94,76 +116,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `playlists:sync` — `original` is now a real output format: including it in `--formats` / `FORMATS` / `formats`
   writes a `<Playlist> - original.m3u8` playlist referencing the untouched downloaded files, same as `mp3`/`wav`/
-  `flac` already did. Previously the entries were collected internally but the playlist was never written — the
-  data was there, the write loop just never included `original`
+  `flac` already did. Previously the entries were collected internally but the playlist was never written — the data was
+  there, the write loop just never included `original`
 - `playlists:sync` — MP3 encoding mode (`--mp3-mode` / `MP3_MODE` / `mp3_mode`): `cbr` (constant bitrate,
-  **new default**, bitrate via `--mp3-bitrate` / `MP3_BITRATE` / `mp3_bitrate`, default `320`) or `vbr` (the
-  previous behaviour, quality via the existing `--mp3-quality`). CBR is now the default because some DJ software
-  (Rekordbox) misreports VBR MP3 bitrate — it reads the first frame's bitrate instead of the true average, so a
-  track with a quiet intro can display a wildly low bitrate (e.g. "32 kbit/s") despite a much higher real average.
-  Never prompted (E-category parameter, like the other ffmpeg/binary options)
-- `playlists:sync` — `--reencode-stale-mp3` / `--no-reencode-stale-mp3` (on by default): under `--mp3-mode=cbr`,
-  probes each existing mp3 target's average bitrate and, if it's off from `--mp3-bitrate` by more than 10%
-  (or 8 kbps), deletes and reconverts it — no redownload needed, the source stays archived. Fixes mp3s
-  converted before switching to CBR (the same "32 kbit/s" scenario above) without manually deleting files
-- `playlists:sync` — re-encoded stale MP3 files are now collected into an end-of-run warning summary instead of
-  being printed inline, so the list survives alongside the progress bars
+  **new default**, bitrate via `--mp3-bitrate` / `MP3_BITRATE` / `mp3_bitrate`, default `320`) or `vbr` (the previous
+  behaviour, quality via the existing `--mp3-quality`). CBR is now the default because some DJ software
+  (Rekordbox) misreports VBR MP3 bitrate — it reads the first frame's bitrate instead of the true average, so a track
+  with a quiet intro can display a wildly low bitrate (e.g. "32 kbit/s") despite a much higher real average. Never
+  prompted (E-category parameter, like the other ffmpeg/binary options)
+- `playlists:sync` — `--reencode-stale-mp3` / `--no-reencode-stale-mp3` (on by default): under `--mp3-mode=cbr`, probes
+  each existing mp3 target's average bitrate and, if it's off from `--mp3-bitrate` by more than 10%
+  (or 8 kbps), deletes and reconverts it — no redownload needed, the source stays archived. Fixes mp3s converted before
+  switching to CBR (the same "32 kbit/s" scenario above) without manually deleting files
+- `playlists:sync` — re-encoded stale MP3 files are now collected into an end-of-run warning summary instead of being
+  printed inline, so the list survives alongside the progress bars
 - `playlists:sync` — CLI options for every parameter (`--formats`, `--mp3-quality`, `--library-dir`,
   `--archive-dir`, `--lib-filename-template`, `--ytdlp-bin`, `--spotdl-bin`, `--ffmpeg-bin`, `--ffprobe-bin`,
-  `--extractor-retries`, `--retry-sleep`, `--sleep-requests`, `--limit-rate`, `--pause-between`); resolution stays
-  CLI → env → config file → default
+  `--extractor-retries`, `--retry-sleep`, `--sleep-requests`, `--limit-rate`, `--pause-between`); resolution stays CLI →
+  env → config file → default
 - `playlists:sync` — unified cookies: one shared Netscape cookie file for both yt-dlp and spotdl
   (`--cookies` / `COOKIES_FILE` / `cookies_file`, default `config/cookies.txt`) with per-tool overrides
   (`--ytdlp-cookies` / `YTDLP_COOKIE_FILE` / `ytdlp_cookie_file` and
   `--spotdl-cookies` / `SPOTDL_COOKIE_FILE` / `spotdl_cookie_file`)
-- `playlists:sync` — the output formats question (`--formats` / `FORMATS` / `formats`) is now prompted when
-  configured nowhere, same as input file/output directory: a comma-separated list of `original`, `mp3`, `wav`,
-  `flac`, validated (`PlaylistsSyncCommand::parseFormatsAnswer` is a pure, unit-tested parser rejecting empty or
-  unknown entries) and persisted so it is asked only once; fixed a latent stale-config-merge bug in the
-  input-file/output-dir prompt save that this exposed (it now reloads the config file fresh instead of reusing
-  the copy read at the start of the run, so an earlier prompt answer in the same run is no longer clobbered)
+- `playlists:sync` — the output formats question (`--formats` / `FORMATS` / `formats`) is now prompted when configured
+  nowhere, same as input file/output directory: a comma-separated list of `original`, `mp3`, `wav`,
+  `flac`, validated (`PlaylistsSyncCommand::parseFormatsAnswer` is a pure, unit-tested parser rejecting empty or unknown
+  entries) and persisted so it is asked only once; fixed a latent stale-config-merge bug in the input-file/output-dir
+  prompt save that this exposed (it now reloads the config file fresh instead of reusing the copy read at the start of
+  the run, so an earlier prompt answer in the same run is no longer clobbered)
 - `playlists:sync` — codec-aware quality threshold on the PEAQ ODG scale (0 = transparent … -4 = very annoying):
   each source's estimated ODG is interpolated from a per-codec calibration table (`mp3`/`aac`/`opus`/`vorbis`
-  anchor points; lossless = 0, unknown codecs use the conservative MP3 curve), so e.g. 128 kbps Opus passes a
-  threshold that 128 kbps MP3 fails; configured via `--min-odg` / `MIN_ODG` / `min_odg` with
-  `--min-odg-mode` / `MIN_ODG_MODE` / `min_odg_mode` (`warn`/`filter`); in filter mode the threshold is inverted
-  per codec into minimum bitrates and expressed as a fail-closed yt-dlp format selector with one branch per codec
-  prefix (lossless always passes); the post-download check reads `acodec` from the `.info.json` or probes
-  codec + bitrate with a single `ffprobe` call (spotdl tracks); warn/skip messages show raw kbps, codec, and
-  estimated ODG; a track appearing in several playlists is evaluated and warn-listed once (per-file cache,
-  deduped by track id); the warn line's title falls back to the `.info.json` title and then to the
-  `{id} - {title}` library filename when the playlist entry carries no title (SoundCloud set entries,
-  pre-sidecar downloads)
+  anchor points; lossless = 0, unknown codecs use the conservative MP3 curve), so e.g. 128 kbps Opus passes a threshold
+  that 128 kbps MP3 fails; configured via `--min-odg` / `MIN_ODG` / `min_odg` with
+  `--min-odg-mode` / `MIN_ODG_MODE` / `min_odg_mode` (`warn`/`filter`); in filter mode the threshold is inverted per
+  codec into minimum bitrates and expressed as a fail-closed yt-dlp format selector with one branch per codec prefix (
+  lossless always passes); the post-download check reads `acodec` from the `.info.json` or probes codec + bitrate with a
+  single `ffprobe` call (spotdl tracks); warn/skip messages show raw kbps, codec, and estimated ODG; a track appearing
+  in several playlists is evaluated and warn-listed once (per-file cache, deduped by track id); the warn line's title
+  falls back to the `.info.json` title and then to the
+  `{id} - {title}` library filename when the playlist entry carries no title (SoundCloud set entries, pre-sidecar
+  downloads)
 - `playlists:sync` — the min-odg question is a guided prompt: quality tiers with decision help
-  ([1] Archive / Pro Club Standard ODG ≥ -0.2, [2] Semi-Pro Performance Minimum ODG ≥ -1.0, [3] Preview Only
-  ODG ≥ -2.0, [4] Off — hints show per-codec bitrate equivalents), accepting an option number, a custom
-  ODG value in [-4, 0], or empty for off (`PlaylistsSyncCommand::parseMinOdgAnswer` is a pure, unit-tested parser)
+  ([1] Archive / Pro Club Standard ODG ≥ -0.2, [2] Semi-Pro Performance Minimum ODG ≥ -1.0, [3] Preview Only ODG ≥
+  -2.0, [4] Off — hints show per-codec bitrate equivalents), accepting an option number, a custom ODG value in [-4, 0],
+  or empty for off (`PlaylistsSyncCommand::parseMinOdgAnswer` is a pure, unit-tested parser)
 - `usb:setup` — env vars for the existing options, acting like the CLI option (they suppress the prompt):
   `USB_DEVICE`, `USB_SOURCE_DEVICE`, `USB_DEBIAN_ISO`, `USB_PERSISTENCE_SIZE`, `USB_DOWNLOADS_FILE`,
   `USB_UPDATE` (for `--update`), `USB_YES` (for `--yes`); new parameters `--cache-dir` / `USB_CACHE_DIR`,
   `--install-ventoy` / `USB_INSTALL_VENTOY` (yes/no, skips the Ventoy prompt) and `--iso-variant` /
-  `USB_ISO_VARIANT` (implies ISO source "download", skips the ISO prompts, works non-interactively too);
-  usb:setup now reads `.env` (loader moved to `BaseCommand`)
-- `playlists:sync` — config-file fallback layer for every parameter: all env vars now have a snake_case equivalent
-  in `config/playlists-sync.json` (resolution order: CLI option → env var → config file → prompt → default); new
+  `USB_ISO_VARIANT` (implies ISO source "download", skips the ISO prompts, works non-interactively too); usb:setup now
+  reads `.env` (loader moved to `BaseCommand`)
+- `playlists:sync` — config-file fallback layer for every parameter: all env vars now have a snake_case equivalent in
+  `config/playlists-sync.json` (resolution order: CLI option → env var → config file → prompt → default); new
   `config/playlists-sync.json.example`
 - `playlists:sync` — interactive quality-threshold prompts: the minimum estimated ODG (`min_odg`) is asked **once**
   when configured nowhere (empty answer persists `"min_odg": null` = off; delete the key to re-trigger), the
-  `warn`/`filter` mode (`min_odg_mode`) is asked **every interactive run while a minimum is active** with the
-  saved/env value as default (`--min-odg-mode` suppresses it); `-n` skips both, only prompt answers are persisted
+  `warn`/`filter` mode (`min_odg_mode`) is asked **every interactive run while a minimum is active** with the saved/env
+  value as default (`--min-odg-mode` suppresses it); `-n` skips both, only prompt answers are persisted
 - `BaseCommand` prompt/resolution primitives shared by both commands: `askText` (free text with saved default +
   validator), `askChoice` (choice with saved value/index default), `askConfirmation` (confirmation honouring a
   skip-confirm flag), `resolveParam` (CLI → env → config → default)
-- README/docs — shared "Configuration & parameter resolution" overview (evaluation order, persistence rule) plus
-  unified per-command parameter tables (param, CLI option, env var, config key, prompted-when, default) for
+- README/docs — shared "Configuration & parameter resolution" overview (evaluation order, persistence rule) plus unified
+  per-command parameter tables (param, CLI option, env var, config key, prompted-when, default) for
   `playlists:sync` and `usb:setup`
 - Spotify support via [spotdl](https://github.com/spotDL/spotify-downloader): `open.spotify.com` playlist/album/track
-  URLs (and `spotify:` URIs) in the input file are routed to spotdl, which matches tracks on YouTube Music and
-  downloads best-quality m4a originals (`--bitrate disable`) named `{track-id} - {title}` into the shared library;
-  playlist identity/entries come from `spotdl save` metadata; deduplication via a separate `.archive/spotify.txt`
-  (progress counted by archive diff); the existing ffmpeg conversion + M3U8 pipeline applies unchanged to all
-  sources. New env vars `SPOTDL_BIN` and `SPOTDL_COOKIE_FILE` (optional YT Music Premium cookies → 256k m4a);
-  spotdl installed in the ddev web image
+  URLs (and `spotify:` URIs) in the input file are routed to spotdl, which matches tracks on YouTube Music and downloads
+  best-quality m4a originals (`--bitrate disable`) named `{track-id} - {title}` into the shared library; playlist
+  identity/entries come from `spotdl save` metadata; deduplication via a separate `.archive/spotify.txt`
+  (progress counted by archive diff); the existing ffmpeg conversion + M3U8 pipeline applies unchanged to all sources.
+  New env vars `SPOTDL_BIN` and `SPOTDL_COOKIE_FILE` (optional YT Music Premium cookies → 256k m4a); spotdl installed in
+  the ddev web image
 - `App\Process\ProcessRunner` interface + `ProcOpenProcessRunner` implementation — injectable process-execution seam
   (optional constructor argument on both commands, defaulting to the real runner) extracted from the two duplicated
   `runCmd` `proc_open` loops; `UsbSetupCommand::deviceNameCheckOutcome` pure helper extracted from
@@ -175,18 +197,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SoundCloudDownloadCommand::probeSampleRate` and its `runCmd` line splitting, and `deviceNameCheckOutcome`
 - GitHub Actions workflow (`.github/workflows/tests.yml`) running the PHPUnit suite on every push (PHP 8.3,
   ubuntu-latest, plain `composer install` + `composer test` — no ddev needed, the suite is self-contained)
-- `usb:setup` — free-space preflight for the configuration path: after ISO/software sizes are known and before the
-  stick is touched, a warning (+ confirmation unless `--yes`) appears when ISO + persistence + software may not fit
-  the target data partition (duplicate mode already had a hard-fail preflight; both now share
+- `usb:setup` — free-space preflight for the configuration path: after ISO/software sizes are known and before the stick
+  is touched, a warning (+ confirmation unless `--yes`) appears when ISO + persistence + software may not fit the target
+  data partition (duplicate mode already had a hard-fail preflight; both now share
   `targetDataCapacityBytes`)
 - `soundcloud:download` flow tests through CommandTester (`tests/Command/SoundCloudDownloadCommandFlowTest.php`):
-  download/convert/M3U8 happy path, playlist-fetch failure, yt-dlp nonzero exit, missing-options failure — all in a
-  temp workspace with `DOTENV_PATH` pinned so no real environment leaks in; plus unit tests for `ensureConverted`
+  download/convert/M3U8 happy path, playlist-fetch failure, yt-dlp nonzero exit, missing-options failure — all in a temp
+  workspace with `DOTENV_PATH` pinned so no real environment leaks in; plus unit tests for `ensureConverted`
   (existing target short-circuit, missing source, probe→ffmpeg pipeline, ffmpeg failure) and `requireBinary`
 - Interactive `usb:setup` flow regression tests through `CommandTester::setInputs()`
   (`tests/Command/UsbSetupCommandFlowTest.php`): `device_name` survives the final batched config save (stale-merge
-  clobber), device-name mismatch warning + abort, mode default follows detected stick state, update mode falls back
-  to a full Ventoy install (`-I`) when Ventoy is missing
+  clobber), device-name mismatch warning + abort, mode default follows detected stick state, update mode falls back to a
+  full Ventoy install (`-I`) when Ventoy is missing
 
 ### Changed
 
@@ -201,47 +223,47 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refactored onto the shared `BaseCommand` helpers (prompt texts and behaviour unchanged)
 - Empty env-var values are now treated as unset for all resolver-routed `playlists:sync` parameters (previously
   `MP3_QUALITY=""` was used verbatim)
-- `ensureConverted` collects re-encoded MP3 paths into `$reencodedStaleMp3` instead of printing inline warnings,
-  keeping output compatible with progress-bar updates in pty-less environments
-- `BaseCommand` gained an `ensureDirectory` helper replacing redundant `mkdir` calls (TOCTOU-safe directory
-  creation across both commands); `saveConfig` calls replaced with a new `updateConfig` method to avoid
-  clobbering pre-existing config data; unused `ProcessRunner`/`SymfonyStyle` dependencies removed where unused
+- `ensureConverted` collects re-encoded MP3 paths into `$reencodedStaleMp3` instead of printing inline warnings, keeping
+  output compatible with progress-bar updates in pty-less environments
+- `BaseCommand` gained an `ensureDirectory` helper replacing redundant `mkdir` calls (TOCTOU-safe directory creation
+  across both commands); `saveConfig` calls replaced with a new `updateConfig` method to avoid clobbering pre-existing
+  config data; unused `ProcessRunner`/`SymfonyStyle` dependencies removed where unused
 - `playlists:sync` — ffmpeg conversions now run with `-loglevel error` instead of `-loglevel warning`, silencing
   harmless warning noise (e.g. "timescale not set", "encoding as 24 bits-per-sample") that garbled the progress bars
-- **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube
-  and now Spotify, so the old name was misleading. Class `SoundCloudDownloadCommand` → `PlaylistsSyncCommand`,
-  config `config/soundcloud-download.json` → `config/playlists-sync.json` (existing legacy config is read once as
-  a fallback and migrated on the next interactive save), docs `docs/soundcloud-downloader.md` →
+- **Breaking**: `soundcloud:download` renamed to `playlists:sync` (no alias) — the command already handled YouTube and
+  now Spotify, so the old name was misleading. Class `SoundCloudDownloadCommand` → `PlaylistsSyncCommand`, config
+  `config/soundcloud-download.json` → `config/playlists-sync.json` (existing legacy config is read once as a fallback
+  and migrated on the next interactive save), docs `docs/soundcloud-downloader.md` →
   `docs/playlists-sync.md`
-- PHP requirement corrected from `>=8.1` to `>=8.2` — symfony/console ^7.0 and phpunit ^11 already require 8.2,
-  so 8.1 could never install the project; composer.lock content-hash refreshed
+- PHP requirement corrected from `>=8.1` to `>=8.2` — symfony/console ^7.0 and phpunit ^11 already require 8.2, so 8.1
+  could never install the project; composer.lock content-hash refreshed
 - `soundcloud:download` — `requireBinary` now runs through the `ProcessRunner` seam instead of raw `@exec`
 - `usb:setup` — the "Software downloads file" prompt is asked only on the first run: any saved `download_sources`
   answer (including `-` for "none", which is now persisted) is reused silently with an informational note;
-  `--downloads-file` or a config edit changes it later. Duplicate mode no longer prompts — downloads apply there
-  only via an explicit `--downloads-file`
+  `--downloads-file` or a config edit changes it later. Duplicate mode no longer prompts — downloads apply there only
+  via an explicit `--downloads-file`
 
 ### Fixed
 
-- `soundcloud:download` — no longer crashes with a ProgressBar `LogicException` when every playlist fetch fails or
-  all playlists are empty (overall progress bar with `%remaining%` and 0 max steps)
+- `soundcloud:download` — no longer crashes with a ProgressBar `LogicException` when every playlist fetch fails or all
+  playlists are empty (overall progress bar with `%remaining%` and 0 max steps)
 - `usb:setup` — partition paths are now derived correctly for devices whose name ends in a digit
   (`/dev/nvme0n1` → `nvme0n1p1`/`nvme0n1p2`, mmcblk/loop likewise) via a new `partitionPath` helper; previously naive
   `…1`/`…2` concatenation produced wrong node names (`nvme0n11`) on NVMe targets and sources
 - `playlists:sync` — progress bars no longer garble under `docker exec`/`ddev exec` (no pty). Symfony's `ProgressBar`
   silently redirects to `$output->getErrorOutput()` for any `ConsoleOutputInterface` — invisible on a real terminal
   since stdout/stderr share one tty there, but under a pty-less `exec` they're two independently-buffered pipes
-  (stderr unbuffered, stdout block-buffered) that desync when merged for display. New `barOutput()` helper forces
-  all three progress bars (`fetchBar`/`overallBar`/`convBar`) onto the same stream as the rest of the command's
-  output instead
+  (stderr unbuffered, stdout block-buffered) that desync when merged for display. New `barOutput()` helper forces all
+  three progress bars (`fetchBar`/`overallBar`/`convBar`) onto the same stream as the rest of the command's output
+  instead
 - Addressed incorrect bitrate metadata affecting Rekordbox with pre-CBR VBR MP3 files
 
 ## [0.5.0] - 2026-07-09
 
 ### Added
 
-- `usb:setup` — `--source-device` option (and interactive "Payload" prompt) to duplicate an already-set-up Ventoy
-  stick onto the target: after the normal Ventoy install, the source's data partition (ISO, `ventoy/ventoy.json`,
+- `usb:setup` — `--source-device` option (and interactive "Payload" prompt) to duplicate an already-set-up Ventoy stick
+  onto the target: after the normal Ventoy install, the source's data partition (ISO, `ventoy/ventoy.json`,
   `persistence.dat` including its user data, `/software/`) is mirrored via rsync instead of downloaded/created from
   configuration; explicitly passed `--debian-iso`/`--downloads-file` still apply additively on top. Includes a
   free-space preflight (fails before anything is wiped), a read-only source mount, an oversized-file (FAT32 >4 GiB)
@@ -264,9 +286,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `installVentoy` runs `Ventoy2Disk.sh` from its own directory and always pipes `yes` into it; the `-u`/`-I` flag
-  now follows detected stick state, with update mode warning and falling back to a full install when Ventoy is
-  missing
+- `installVentoy` runs `Ventoy2Disk.sh` from its own directory and always pipes `yes` into it; the `-u`/`-I` flag now
+  follows detected stick state, with update mode warning and falling back to a full install when Ventoy is missing
 
 ### Fixed
 
@@ -295,14 +316,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and troubleshooting table
 - `docs/usb-setup.md` — USB setup command reference, step-by-step explanation, partition layout, FAT32 limitations, and
   boot instructions
-- Progress bars for playlist fetching, track downloads, and file conversion; `python3-pip` and `curl-cffi` installed
-  in the Docker image to support them
+- Progress bars for playlist fetching, track downloads, and file conversion; `python3-pip` and `curl-cffi` installed in
+  the Docker image to support them
 - PHPUnit test suite (`phpunit.xml`, `tests/`) covering the pure conversion/rate-selection, sleep-request, and
   filename-sanitization helpers; `composer test` script and `phpunit/phpunit` dev dependency
-- `usb:setup` — `--downloads-file` option and shared `config/usb-setup.json` `download_sources` entry to copy
-  additional software (Rekordbox, T-Racks 8x8 Matrix Digital Processor Editor, Ableton Live trial) onto the stick's
-  `/software/` folder; `magnet:`/`urn:btmh:` link syntax is recognized and reserved for future torrent support but
-  not yet downloaded
+- `usb:setup` — `--downloads-file` option and shared `config/usb-setup.json` `download_sources` entry to copy additional
+  software (Rekordbox, T-Racks 8x8 Matrix Digital Processor Editor, Ableton Live trial) onto the stick's
+  `/software/` folder; `magnet:`/`urn:btmh:` link syntax is recognized and reserved for future torrent support but not
+  yet downloaded
 - `usb:setup` downloads file now also accepts local file/directory paths (copied as-is, no download), including a
   default `config/usb-manual-downloads/` folder for anything downloaded by hand (account-gated vendor pages, e.g.
   Traktor Pro, Traktor DJ2, Resolume Arena)
@@ -310,16 +331,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   instead of silently copying it onto the stick as if it were the installer
 - `usb:setup` downloads-file local directory entries support a `/**` suffix for recursive scanning (e.g.
   `config/usb-manual-downloads/**`), preserving each file's subfolder path under `/software/` on the stick
-- `config/usb-setup.json.example`, `config/playlists.txt.example`, `config/cookies.txt.example` — checked-in
-  starting points for the gitignored personal/machine-specific config files; `config/usb-downloads.txt` and
+- `config/usb-setup.json.example`, `config/playlists.txt.example`, `config/cookies.txt.example` — checked-in starting
+  points for the gitignored personal/machine-specific config files; `config/usb-downloads.txt` and
   `config/soundcloud-download.json` (no personal data in either) are now committed directly
 
 ### Changed
 
 - `.gitignore` no longer blanket-excludes `config/`; only personal/machine-specific files (`usb-setup.json`,
   `playlists.txt`, `cookies.txt`, and anything under `usb-manual-downloads/`) stay gitignored
-- Download logic reworked for more efficient playlist/track handling with streamlined progress tracking and
-  clearer error messages; download/metadata statuses standardized on `SEEN`/`DONE` markers
+- Download logic reworked for more efficient playlist/track handling with streamlined progress tracking and clearer
+  error messages; download/metadata statuses standardized on `SEEN`/`DONE` markers
 - README/TODO documentation updates (Docker install prerequisite for ddev, clarified dependencies); added
   `laravel-idea.xml` PHPStorm config
 
@@ -338,8 +359,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `.info.json`/`.jpg` sidecars, so final MP3/WAV/FLAC outputs are unaffected
 - `soundcloud:download` — the per-playlist summary no longer always reports `0 already in archive`. yt-dlp filters
   already-archived tracks during playlist enumeration (before any `--print` stage), so skipped tracks emit no output;
-  the count is now derived by diffing the playlist against a snapshot of the download archive taken before the run.
-  The summary also gained a `N failed` suffix for tracks that were neither downloaded nor previously archived (e.g.
+  the count is now derived by diffing the playlist against a snapshot of the download archive taken before the run. The
+  summary also gained a `N failed` suffix for tracks that were neither downloaded nor previously archived (e.g.
   DRM-protected or geo-restricted). Covered by new `loadArchiveIds`/`countArchived` unit tests
 - Metadata files no longer mismatch during playlist conversion; improved handling of empty playlists and conversion
   progress display
