@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\UsbSetup;
 
+use App\Console\PromptHint;
 use App\Process\ProcessRunner;
 use RuntimeException;
 use Symfony\Component\Console\Helper\QuestionHelper;
@@ -64,7 +65,7 @@ final class RsyncMirror
                 );
                 if (!$skipConfirm) {
                     $q = new ConfirmationQuestion(
-                        'Proceed with mirror (including deletions)? [yes/NO] ',
+                        'Proceed with mirror (including deletions)? [yes/NO] '.PromptHint::yesFlag().' ',
                         false,
                         '/^yes$/i'
                     );

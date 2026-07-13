@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Command;
 
+use App\Console\PromptHint;
 use App\Process\BinaryChecker;
 use App\Process\ProcessRunner;
 use App\UsbSetup\DeviceInspector;
@@ -227,7 +228,17 @@ class UsbSetupCommand extends BaseCommand
 
         if ($input->isInteractive() && $devices === null) {
             $savedDevices = $config['devices'] ?? (isset($config['device']) ? [$config['device']] : null);
-            $devices = $this->deviceInspector->promptForDevices($input, $output, $helper, $this->io, $savedDevices);
+            $devices = $this->deviceInspector->promptForDevices(
+                $input,
+                $output,
+                $helper,
+                $this->io,
+                $savedDevices,
+                'Target devices',
+                [],
+                '--device',
+                'USB_DEVICE',
+            );
             if ($devices === []) {
                 $this->io->note('Aborted.');
 
@@ -300,7 +311,9 @@ class UsbSetupCommand extends BaseCommand
                         false,
                         false,
                         true,
-                        '/^yes$/i'
+                        '/^yes$/i',
+                        '--yes, -y',
+                        'USB_YES',
                     )) {
                         $this->io->note('Aborted.');
 
@@ -314,16 +327,33 @@ class UsbSetupCommand extends BaseCommand
             if ($updateParam === null) {
                 $modeLabels = ['update existing setup', 'redo from scratch'];
                 $modeDefault = !in_array(false, $ventoyOnStick, true) ? 0 : 1;
-                $isUpdate = $this->askChoice($input, $output, 'Mode', $modeLabels, $modeDefault)
-                    === 'update existing setup';
+                $isUpdate = $this->askChoice(
+                        $input,
+                        $output,
+                        'Mode',
+                        $modeLabels,
+                        $modeDefault,
+                        '',
+                        '--update',
+                        'USB_UPDATE',
+                    ) === 'update existing setup';
             }
 
             // Ventoy install/update (optional; --install-ventoy / USB_INSTALL_VENTOY skip the prompt)
             if ($installVentoyParam === null) {
                 $ventoyLabels = ['install/update Ventoy', 'skip Ventoy'];
                 $ventoyDefault = ($config['install_ventoy'] ?? true) ? 0 : 1;
-                $installVentoy = $this->askChoice($input, $output, 'Ventoy', $ventoyLabels, $ventoyDefault)
-                    === 'install/update Ventoy';
+                $installVentoy = $this->askChoice(
+                        $input,
+                        $output,
+                        'Ventoy',
+                        $ventoyLabels,
+                        $ventoyDefault,
+                        '',
+                        '--install-ventoy',
+                        'USB_INSTALL_VENTOY',
+                        'install_ventoy',
+                    ) === 'install/update Ventoy';
             }
 
             // Payload: built from configuration (download/local files) or duplicated from an existing stick
@@ -338,7 +368,11 @@ class UsbSetupCommand extends BaseCommand
                         $output,
                         'Payload',
                         $payloadLabels,
-                        $payloadDefault
+                        $payloadDefault,
+                        '',
+                        '--source-device',
+                        'USB_SOURCE_DEVICE',
+                        'payload_source',
                     ) === $payloadLabels[1]) {
                     $sourceDevice = $this->deviceInspector->promptForDevice(
                         $input,
@@ -347,7 +381,9 @@ class UsbSetupCommand extends BaseCommand
                         $this->io,
                         $config['source_device'] ?? null,
                         'Source device',
-                        $devices
+                        $devices,
+                        '--source-device',
+                        'USB_SOURCE_DEVICE',
                     );
                     if ($sourceDevice === null) {
                         $this->io->note('Aborted.');
@@ -384,7 +420,10 @@ class UsbSetupCommand extends BaseCommand
                     'Debian ISO',
                     ['download', 'local path', 'skip'],
                     $savedIsoSrc,
-                    ' <comment>(downloads are cached in downloads/.cache/)</comment>'
+                    ' <comment>(downloads are cached in downloads/.cache/)</comment>',
+                    '--debian-iso',
+                    'USB_DEBIAN_ISO',
+                    'iso_source',
                 );
 
                 if ($isoSrc === 'download') {
@@ -393,11 +432,24 @@ class UsbSetupCommand extends BaseCommand
                         $output,
                         'Variant',
                         self::ISO_VARIANTS,
-                        $config['iso_variant'] ?? 'standard'
+                        $config['iso_variant'] ?? 'standard',
+                        '',
+                        '--iso-variant',
+                        'USB_ISO_VARIANT',
+                        'iso_variant',
                     );
                 } elseif ($isoSrc === 'local path') {
                     $savedPath = $config['iso_path'] ?? null;
-                    $ans = $this->askText($input, $output, '<question>Path to Debian ISO</question>', $savedPath);
+                    $ans = $this->askText(
+                        $input,
+                        $output,
+                        '<question>Path to Debian ISO</question>',
+                        $savedPath,
+                        null,
+                        '--debian-iso',
+                        'USB_DEBIAN_ISO',
+                        'iso_path',
+                    );
                     $debianIso = ($ans !== null && trim($ans) !== '') ? trim($ans) : null;
                     if ($debianIso !== null && !is_file($debianIso)) {
                         $this->io->error("ISO file not found: $debianIso");
@@ -426,7 +478,10 @@ class UsbSetupCommand extends BaseCommand
                         }
 
                         return (string)$n;
-                    }
+                    },
+                    '--persistence-size',
+                    'USB_PERSISTENCE_SIZE',
+                    'persistence_mib',
                 );
                 $persistenceMib = (int)($ans ?? $persistDefault);
             }
@@ -445,7 +500,8 @@ class UsbSetupCommand extends BaseCommand
                         ? ["copy software from $savedPath", 'use a different downloads file', 'skip software downloads']
                         : ['skip software downloads', 'copy software from a downloads file'];
                     $q = new ChoiceQuestion(
-                        '<question>Software downloads:</question> [<info>'.$downloadLabels[0].'</info>]',
+                        '<question>Software downloads:</question> [<info>'.$downloadLabels[0].'</info>]'
+                        .PromptHint::build('--downloads-file', 'USB_DOWNLOADS_FILE', 'download_sources'),
                         $downloadLabels,
                         0
                     );
@@ -466,7 +522,11 @@ class UsbSetupCommand extends BaseCommand
                         $input,
                         $output,
                         "<question>Software downloads file</question> (http(s) URLs copied to /software/ on the stick; '-' to skip)",
-                        $downloadsDefault
+                        $downloadsDefault,
+                        null,
+                        '--downloads-file',
+                        'USB_DOWNLOADS_FILE',
+                        'download_sources',
                     );
                     $ans = $ans !== null ? trim($ans) : '';
                     $downloadsFile = ($ans === '' || $ans === '-') ? null : $ans;
@@ -658,7 +718,9 @@ class UsbSetupCommand extends BaseCommand
                     false,
                     $skipConfirm,
                     true,
-                    '/^yes$/i'
+                    '/^yes$/i',
+                    '--yes, -y',
+                    'USB_YES',
                 )) {
                     $this->io->note('Aborted.');
 
@@ -715,7 +777,17 @@ class UsbSetupCommand extends BaseCommand
             } else {
                 $this->io->note('Updating — data partition is preserved on devices that already have it.');
             }
-            if (!$this->askConfirmation($input, $output, 'Proceed with update? [YES/no] ', true, $skipConfirm)) {
+            if (!$this->askConfirmation(
+                $input,
+                $output,
+                'Proceed with update? [YES/no] ',
+                true,
+                $skipConfirm,
+                true,
+                '/^y/i',
+                '--yes, -y',
+                'USB_YES',
+            )) {
                 $this->io->note('Aborted.');
 
                 return Command::SUCCESS;
@@ -731,7 +803,9 @@ class UsbSetupCommand extends BaseCommand
                 false,
                 $skipConfirm,
                 true,
-                '/^yes$/i'
+                '/^yes$/i',
+                '--yes, -y',
+                'USB_YES',
             )) {
                 $this->io->note('Aborted.');
 
@@ -744,7 +818,9 @@ class UsbSetupCommand extends BaseCommand
                 false,
                 $skipConfirm,
                 true,
-                '/^yes$/i'
+                '/^yes$/i',
+                '--yes, -y',
+                'USB_YES',
             )) {
                 $this->io->note('Aborted.');
 
@@ -797,7 +873,9 @@ class UsbSetupCommand extends BaseCommand
                     false,
                     $skipConfirm,
                     true,
-                    '/^yes$/i'
+                    '/^yes$/i',
+                    '--yes, -y',
+                    'USB_YES',
                 )) {
                     $this->io->note('Aborted.');
 
@@ -856,7 +934,9 @@ class UsbSetupCommand extends BaseCommand
                             false,
                             $skipConfirm,
                             true,
-                            '/^yes$/i'
+                            '/^yes$/i',
+                            '--yes, -y',
+                            'USB_YES',
                         );
                         if (!$doReformat) {
                             $this->io->warning("$dataPartition left untouched (not FAT32).");
@@ -1128,7 +1208,9 @@ class UsbSetupCommand extends BaseCommand
                 false,
                 $skipConfirm,
                 true,
-                '/^yes$/i'
+                '/^yes$/i',
+                '--yes, -y',
+                'USB_YES',
             )) {
                 $this->io->note('Aborted.');
 

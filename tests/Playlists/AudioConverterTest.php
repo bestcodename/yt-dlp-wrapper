@@ -217,6 +217,68 @@ final class AudioConverterTest extends TestCase
     }
 
     /**
+     * @return array<string, array{float, list<array{label: string, floor: float}>, int}>
+     */
+    public static function odgBucketIndexProvider(): array
+    {
+        $buckets = self::sampleOdgBuckets();
+
+        return [
+            'better than best tier' => [-0.1, $buckets, 3],
+            'exact best tier boundary' => [-0.2, $buckets, 3],
+            'mid tier' => [-0.5, $buckets, 2],
+            'exact mid tier boundary' => [-1.0, $buckets, 2],
+            'loose tier' => [-1.5, $buckets, 1],
+            'exact loose tier boundary' => [-2.0, $buckets, 1],
+            'just below loosest tier' => [-2.01, $buckets, 0],
+            'far below every tier' => [-3.9, $buckets, 0],
+        ];
+    }
+
+    /**
+     * @return list<array{label: string, floor: float}>
+     */
+    private static function sampleOdgBuckets(): array
+    {
+        return [
+            ['label' => 'Below Preview', 'floor' => -INF],
+            ['label' => 'Preview', 'floor' => -2.0],
+            ['label' => 'Semi-Pro', 'floor' => -1.0],
+            ['label' => 'Archive', 'floor' => -0.2],
+        ];
+    }
+
+    /**
+     * @return array<string, array{
+     *     array<int, array{label: string, hint: string, odg: ?float}>,
+     *     list<array{label: string, floor: float}>
+     * }>
+     */
+    public static function odgTierBucketsProvider(): array
+    {
+        $tiers = [
+            1 => ['label' => 'Archive', 'hint' => '', 'odg' => -0.2],
+            2 => ['label' => 'Semi-Pro', 'hint' => '', 'odg' => -1.0],
+            3 => ['label' => 'Preview', 'hint' => '', 'odg' => -2.0],
+            4 => ['label' => 'Off', 'hint' => '', 'odg' => null],
+        ];
+
+        return [
+            'real tiers plus off, sorted worst-first with synthetic floor' => [
+                $tiers,
+                [
+                    ['label' => 'Below Preview', 'floor' => -INF],
+                    ['label' => 'Preview', 'floor' => -2.0],
+                    ['label' => 'Semi-Pro', 'floor' => -1.0],
+                    ['label' => 'Archive', 'floor' => -0.2],
+                ],
+            ],
+            'empty input' => [[], []],
+            'only an off tier' => [[4 => ['label' => 'Off', 'hint' => '', 'odg' => null]], []],
+        ];
+    }
+
+    /**
      * @return array<string, array{int, int|null}>
      */
     public static function targetSampleRateProvider(): array
@@ -589,6 +651,12 @@ final class AudioConverterTest extends TestCase
         self::assertSame($expected, AudioConverter::normalizeCodec($acodec));
     }
 
+    #[DataProvider('odgBucketIndexProvider')]
+    public function testOdgBucketIndex(float $odg, array $buckets, int $expected): void
+    {
+        self::assertSame($expected, AudioConverter::odgBucketIndex($odg, $buckets));
+    }
+
     public function testOdgCalibrationIsMonotonic(): void
     {
         /** @var array<string, list<array{0: float|int, 1: float}>> $table */
@@ -609,6 +677,12 @@ final class AudioConverterTest extends TestCase
                 );
             }
         }
+    }
+
+    #[DataProvider('odgTierBucketsProvider')]
+    public function testOdgTierBuckets(array $tiers, array $expected): void
+    {
+        self::assertSame($expected, AudioConverter::odgTierBuckets($tiers));
     }
 
     public function testProbeAudioPropertiesCodecOnlyWhenBitrateUnknown(): void

@@ -146,21 +146,6 @@ final class AudioConverter
     }
 
     /**
-     * Whether an estimated ODG counts as below a configured minimum, for the --min-odg warn/filter
-     * decision. Compares at the same 2-decimal precision as formatOdg()'s display (and the
-     * calibration anchors, which are all exact at 1-2 decimals): a real-world bitrate a hair below
-     * a nominal anchor (e.g. a 128 kbps AAC stream actually measured at 127.97 kbps) estimates to
-     * an ODG like -1.0008 which is genuinely `< -1.0` yet is indistinguishable from the threshold
-     * once rounded for display — without rounding first, such tracks get silently filtered even
-     * though they visibly show "est. ODG -1" against a "-1.0" threshold, contradicting the
-     * documented inclusive "ODG ≥ min" semantics (see MIN_ODG_TIERS). Pure — unit-testable.
-     */
-    public static function isBelowMinOdg(float $odg, float $minOdg): bool
-    {
-        return round($odg, 2) < round($minOdg, 2);
-    }
-
-    /**
      * Inverse of estimateOdg for one codec family: the lowest bitrate whose estimated ODG
      * reaches the threshold, rounded up to 0.1 kbps so rounding never admits worse quality.
      * Null when the codec cannot reach the threshold at any bitrate (fail-closed: its
@@ -190,6 +175,69 @@ final class AudioConverter
         }
 
         return null;
+    }
+
+    /**
+     * Index into $buckets (as built by odgTierBuckets()) that $odg falls into: the tightest
+     * (highest-floor) bucket whose floor the value still meets, using the same rounded comparison
+     * as isBelowMinOdg() so a value's bucket always agrees with its displayed (2-decimal) ODG.
+     * Pure — unit-testable.
+     *
+     * @param list<array{label: string, floor: float}> $buckets ascending by floor, odgTierBuckets() order
+     */
+    public static function odgBucketIndex(float $odg, array $buckets): int
+    {
+        $idx = 0;
+        foreach ($buckets as $i => $bucket) {
+            if ($bucket['floor'] === -INF || !self::isBelowMinOdg($odg, $bucket['floor'])) {
+                $idx = $i;
+            }
+        }
+
+        return $idx;
+    }
+
+    /**
+     * Whether an estimated ODG counts as below a configured minimum, for the --min-odg warn/filter
+     * decision. Compares at the same 2-decimal precision as formatOdg()'s display (and the
+     * calibration anchors, which are all exact at 1-2 decimals): a real-world bitrate a hair below
+     * a nominal anchor (e.g. a 128 kbps AAC stream actually measured at 127.97 kbps) estimates to
+     * an ODG like -1.0008 which is genuinely `< -1.0` yet is indistinguishable from the threshold
+     * once rounded for display — without rounding first, such tracks get silently filtered even
+     * though they visibly show "est. ODG -1" against a "-1.0" threshold, contradicting the
+     * documented inclusive "ODG ≥ min" semantics (see MIN_ODG_TIERS). Pure — unit-testable.
+     */
+    public static function isBelowMinOdg(float $odg, float $minOdg): bool
+    {
+        return round($odg, 2) < round($minOdg, 2);
+    }
+
+    /**
+     * Ordered (worst-first) quality-tier buckets for grouping the low-quality-track summary: one
+     * bucket per tier in $tiers with a non-null 'odg' (MIN_ODG_TIERS 1-3; tier 4 "Off" must be
+     * excluded by the caller — it has odg=null and isn't a real quality tier), plus a leading
+     * synthetic bucket for ODG values worse than every configured tier. That synthetic bucket
+     * matters because --min-odg can itself sit below the loosest configured tier's threshold (e.g.
+     * a custom -3, below tier 3 "Preview Only"'s -2.0) — tracks that low still need somewhere to go.
+     * Pure — unit-testable.
+     *
+     * @param array<int, array{label: string, hint: string, odg: ?float}> $tiers
+     * @return list<array{label: string, floor: float}> ascending by floor (worst first); floor is
+     *         the inclusive lower ODG bound of the bucket; the synthetic bucket's floor is -INF
+     */
+    public static function odgTierBuckets(array $tiers): array
+    {
+        $real = array_values(array_filter($tiers, static fn(array $t): bool => $t['odg'] !== null));
+        if ($real === []) {
+            return [];
+        }
+        usort($real, static fn(array $a, array $b): int => $a['odg'] <=> $b['odg']);
+        $buckets = [['label' => 'Below '.$real[0]['label'], 'floor' => -INF]];
+        foreach ($real as $tier) {
+            $buckets[] = ['label' => $tier['label'], 'floor' => $tier['odg']];
+        }
+
+        return $buckets;
     }
 
     public static function readTagsFromInfoJson(string $path): array

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-14
+
+### Added
+
+- `playlists:sync` — new `--low-quality-group-by` / `LOW_QUALITY_GROUP_BY` / `low_quality_group_by` option controlling
+  how the end-of-run "below est. ODG" summary is grouped: `tier` (default, worst ODG tier first, tracks within a tier
+  sorted worst-ODG-first) or `playlist` (grouped by playlist first, then by tier within each playlist). It's prompted
+  once interactively while `--min-odg` is active and unset anywhere, then the answer is persisted
+- `playlists:sync` and `usb:setup` — every interactive prompt now shows inline which CLI option, environment variable,
+  and/or config key would have supplied the same value and skipped the prompt next time, e.g.
+  `Mode: [update existing setup] (--update | USB_UPDATE)`. Plain yes/no safety confirmations show
+  `(--yes, -y | USB_YES)`
+
+### Changed
+
+- `playlists:sync` — the "below est. ODG" summary is now sorted worst-quality-first and grouped by ODG tier by default
+  (previously an unsorted flat list in track-encounter order), and every track line now shows every playlist it belongs
+  to instead of only the first playlist encountered
+
 ## [0.9.3] - 2026-07-13
 
 ### Fixed
@@ -403,20 +422,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `README.md` with project description, requirements, installation, configuration, usage, output layout, and
   troubleshooting
 
-[Unreleased]: https://github.com/user/yt-dlp/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/bestcodename/yt-dlp/compare/v0.6.1...HEAD
 
-[0.6.1]: https://github.com/user/yt-dlp/compare/v0.6.0...v0.6.1
+[0.6.1]: https://github.com/bestcodename/yt-dlp/compare/v0.6.0...v0.6.1
 
-[0.6.0]: https://github.com/user/yt-dlp/compare/v0.5.0...v0.6.0
+[0.6.0]: https://github.com/bestcodename/yt-dlp/compare/v0.5.0...v0.6.0
 
-[0.5.0]: https://github.com/user/yt-dlp/compare/v0.4.1...v0.5.0
+[0.5.0]: https://github.com/bestcodename/yt-dlp/compare/v0.4.1...v0.5.0
 
-[0.4.1]: https://github.com/user/yt-dlp/compare/v0.4.0...v0.4.1
+[0.4.1]: https://github.com/bestcodename/yt-dlp/compare/v0.4.0...v0.4.1
 
-[0.4.0]: https://github.com/user/yt-dlp/compare/v0.3.0...v0.4.0
+[0.4.0]: https://github.com/bestcodename/yt-dlp/compare/v0.3.0...v0.4.0
 
-[0.3.0]: https://github.com/user/yt-dlp/compare/v0.2.0...v0.3.0
+[0.3.0]: https://github.com/bestcodename/yt-dlp/compare/v0.2.0...v0.3.0
 
-[0.2.0]: https://github.com/user/yt-dlp/compare/v0.1.0...v0.2.0
+[0.2.0]: https://github.com/bestcodename/yt-dlp/compare/v0.1.0...v0.2.0
 
-[0.1.0]: https://github.com/user/yt-dlp/releases/tag/v0.1.0
+[0.1.0]: https://github.com/bestcodename/yt-dlp/releases/tag/v0.1.0

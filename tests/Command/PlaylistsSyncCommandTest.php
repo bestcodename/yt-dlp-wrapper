@@ -278,6 +278,79 @@ final class PlaylistsSyncCommandTest extends TestCase
         self::assertSame($output, $method->invoke(null, $output));
     }
 
+    public function testBuildLowQualitySummaryLinesGroupsByPlaylist(): void
+    {
+        $tracks = [
+            'a' => self::lowQualityTrack('Alpha Track', 'a', 128.0, 'mp3', -0.5, ['Beta Playlist']),
+            'b' => self::lowQualityTrack('Bravo Track', 'b', 64.0, 'mp3', -3.5, ['Alpha Playlist']),
+        ];
+
+        $lines = PlaylistsSyncCommand::buildLowQualitySummaryLines($tracks, 'playlist');
+        $text = implode("\n", $lines);
+
+        self::assertLessThan(
+            strpos($text, 'Beta Playlist:'),
+            strpos($text, 'Alpha Playlist:'),
+            'playlists must be grouped alphabetically'
+        );
+        self::assertStringContainsString('Bravo Track', $text);
+        self::assertStringContainsString('Alpha Track', $text);
+    }
+
+    /**
+     * @param list<string> $playlists
+     * @return array{title: string, id: string, abr: float, codec: ?string, odg: float, playlists: list<string>}
+     */
+    private static function lowQualityTrack(
+        string $title,
+        string $id,
+        float $abr,
+        ?string $codec,
+        float $odg,
+        array $playlists
+    ): array {
+        return [
+            'title' => $title,
+            'id' => $id,
+            'abr' => $abr,
+            'codec' => $codec,
+            'odg' => $odg,
+            'playlists' => $playlists,
+        ];
+    }
+
+    public function testBuildLowQualitySummaryLinesGroupsByTierWorstFirst(): void
+    {
+        $tracks = [
+            'a' => self::lowQualityTrack('Better Track', 'a', 96.0, 'aac', -0.5, ['My List']),
+            'b' => self::lowQualityTrack('Worse Track', 'b', 32.0, 'mp3', -3.5, ['My List']),
+        ];
+
+        $lines = PlaylistsSyncCommand::buildLowQualitySummaryLines($tracks, 'tier');
+        $text = implode("\n", $lines);
+
+        self::assertLessThan(
+            strpos($text, 'Better Track'),
+            strpos($text, 'Worse Track'),
+            'worse-tier tracks must be listed before (above) better-tier tracks'
+        );
+    }
+
+    public function testBuildLowQualitySummaryLinesShowsTrackUnderEveryPlaylistItBelongsTo(): void
+    {
+        $tracks = [
+            'a' => self::lowQualityTrack('Shared Track', 'a', 128.0, 'mp3', -1.5, ['Alpha', 'Beta']),
+        ];
+
+        $tierLines = implode("\n", PlaylistsSyncCommand::buildLowQualitySummaryLines($tracks, 'tier'));
+        self::assertStringContainsString('[Alpha, Beta]', $tierLines);
+
+        $playlistLines = implode("\n", PlaylistsSyncCommand::buildLowQualitySummaryLines($tracks, 'playlist'));
+        self::assertStringContainsString('Alpha:', $playlistLines);
+        self::assertStringContainsString('Beta:', $playlistLines);
+        self::assertSame(2, substr_count($playlistLines, 'Shared Track'));
+    }
+
     #[DataProvider('buildM3uPathProvider')]
     public function testBuildM3uPath(
         string $playlistsDir,
@@ -353,5 +426,4 @@ final class PlaylistsSyncCommandTest extends TestCase
         $method = new ReflectionMethod(PlaylistsSyncCommand::class, 'safeName');
         self::assertSame($expected, $method->invoke(null, $input));
     }
-
 }

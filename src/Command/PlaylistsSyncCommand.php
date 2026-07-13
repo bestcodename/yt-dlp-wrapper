@@ -54,6 +54,7 @@ class PlaylistsSyncCommand extends BaseCommand
     public const SOURCE_SPOTIFY = 'spotify';
     public const SOURCE_YTDLP = 'ytdlp';
     private const VALID_FORMATS = ['original', 'mp3', 'wav', 'flac'];
+    private const VALID_LOW_QUALITY_GROUP_BY = ['tier', 'playlist'];
     private const VALID_PLAYLIST_LAYOUTS = ['flat', 'per-playlist', 'per-format'];
     private ?AudioConverter $audioConverter;
     private readonly BinaryChecker $binaryChecker;
@@ -63,6 +64,7 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $ffprobeBin;
     private string $jsRuntimes;
     private ?string $limitRate;
+    private string $lowQualityGroupBy;
     private ?float $minOdg;
     private string $minOdgMode;
     private string $mp3Bitrate;
@@ -118,6 +120,12 @@ class PlaylistsSyncCommand extends BaseCommand
                 null,
                 InputOption::VALUE_REQUIRED,
                 'Below --min-odg: "warn" (default) or "filter"'
+            )
+            ->addOption(
+                'low-quality-group-by',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'Below-ODG summary grouping: "tier" (default) or "playlist"'
             )
             ->addOption(
                 'formats',
@@ -280,7 +288,10 @@ class PlaylistsSyncCommand extends BaseCommand
                 $output,
                 '<question>Output formats</question> (comma-separated: original, mp3, wav, flac, or "all")',
                 $formatsRaw,
-                static fn(?string $v): string => self::parseFormatsAnswer($v)
+                static fn(?string $v): string => self::parseFormatsAnswer($v),
+                '--formats',
+                'FORMATS',
+                'formats',
             );
             $this->updateConfig(['formats' => $formatsRaw]);
         }
@@ -325,11 +336,29 @@ class PlaylistsSyncCommand extends BaseCommand
         if ($input->isInteractive()) {
             if (!$inputFile) {
                 $savedInput = $config['input_file'] ?? 'config/playlists.txt';
-                $inputFile = $this->askText($input, $output, 'Input file', $savedInput);
+                $inputFile = $this->askText(
+                    $input,
+                    $output,
+                    'Input file',
+                    $savedInput,
+                    null,
+                    '--input, -i',
+                    'INPUT_FILE',
+                    'input_file',
+                );
             }
             if (!$baseOutDir) {
                 $savedOut = $config['output_dir'] ?? './downloads';
-                $baseOutDir = $this->askText($input, $output, 'Output directory', $savedOut);
+                $baseOutDir = $this->askText(
+                    $input,
+                    $output,
+                    'Output directory',
+                    $savedOut,
+                    null,
+                    '--out, -o',
+                    'OUTPUT_DIR',
+                    'output_dir',
+                );
             }
             // reload fresh (not the stale $config captured at the top of execute()) so an
             // earlier prompt save in this same run — e.g. formats — isn't clobbered
@@ -402,7 +431,10 @@ class PlaylistsSyncCommand extends BaseCommand
                 '<question>Minimum source audio baseline</question>'
                 .' (option 1-4, custom ODG value between -4 and 0, or empty = off)',
                 null,
-                static fn(?string $v): ?float => self::parseMinOdgAnswer($v)
+                static fn(?string $v): ?float => self::parseMinOdgAnswer($v),
+                '--min-odg',
+                'MIN_ODG',
+                'min_odg',
             );
             $minOdgRaw = $answer !== null ? (string)$answer : null;
             $this->updateConfig(['min_odg' => $answer]);
@@ -430,7 +462,11 @@ class PlaylistsSyncCommand extends BaseCommand
                 $output,
                 'Low-quality handling (warn = list in summary, filter = exclude)',
                 ['warn', 'filter'],
-                in_array($minOdgMode, ['warn', 'filter'], true) ? $minOdgMode : 'warn'
+                in_array($minOdgMode, ['warn', 'filter'], true) ? $minOdgMode : 'warn',
+                '',
+                '--min-odg-mode',
+                'MIN_ODG_MODE',
+                'min_odg_mode',
             );
             $this->updateConfig(['min_odg_mode' => $minOdgMode]);
         } elseif (!in_array($minOdgMode, ['warn', 'filter'], true)) {
@@ -441,6 +477,43 @@ class PlaylistsSyncCommand extends BaseCommand
             return Command::FAILURE;
         }
         $this->minOdgMode = $minOdgMode;
+
+        // Low-quality-summary grouping: CLI → env → config; prompted once (and persisted) only while
+        // a min-odg threshold is active — the grouping is meaningless, and not asked, when quality
+        // filtering is off (mirrors min-odg-mode's activity gate, but only prompts once like playlist-layout)
+        $lowQualityGroupByCli = $input->getOption('low-quality-group-by');
+        $lowQualityGroupByEnv = getenv('LOW_QUALITY_GROUP_BY') ?: null;
+        $lowQualityGroupByConfigured = $lowQualityGroupByCli !== null
+            || $lowQualityGroupByEnv !== null
+            || array_key_exists('low_quality_group_by', $config);
+        $lowQualityGroupBy = strtolower(
+            $lowQualityGroupByCli
+            ?? $lowQualityGroupByEnv
+            ?? (isset($config['low_quality_group_by']) ? (string)$config['low_quality_group_by'] : null)
+            ?? 'tier'
+        );
+        if ($input->isInteractive() && !$lowQualityGroupByConfigured && $this->minOdg !== null) {
+            $lowQualityGroupBy = $this->askChoice(
+                $input,
+                $output,
+                'Low-quality summary grouping (tier = group by ODG tier; playlist = group by playlist)',
+                self::VALID_LOW_QUALITY_GROUP_BY,
+                in_array($lowQualityGroupBy, self::VALID_LOW_QUALITY_GROUP_BY, true) ? $lowQualityGroupBy : 'tier',
+                '',
+                '--low-quality-group-by',
+                'LOW_QUALITY_GROUP_BY',
+                'low_quality_group_by',
+            );
+            $this->updateConfig(['low_quality_group_by' => $lowQualityGroupBy]);
+        } elseif (!in_array($lowQualityGroupBy, self::VALID_LOW_QUALITY_GROUP_BY, true)) {
+            $this->io->error(
+                "Invalid --low-quality-group-by / LOW_QUALITY_GROUP_BY value: $lowQualityGroupBy ".
+                '(expected "tier" or "playlist")'
+            );
+
+            return Command::FAILURE;
+        }
+        $this->lowQualityGroupBy = $lowQualityGroupBy;
         $this->spotdlDownloader ??= new SpotdlDownloader($this->runner, $this->spotdlBin, $this->spotdlCookieFile);
         $this->ytDlpDownloader ??= new YtDlpDownloader(
             $this->runner,
@@ -516,7 +589,11 @@ class PlaylistsSyncCommand extends BaseCommand
                 'Playlist layout (flat = one dir; per-playlist = one dir per playlist;'
                 .' per-format = one dir per format)',
                 self::VALID_PLAYLIST_LAYOUTS,
-                in_array($playlistLayout, self::VALID_PLAYLIST_LAYOUTS, true) ? $playlistLayout : 'flat'
+                in_array($playlistLayout, self::VALID_PLAYLIST_LAYOUTS, true) ? $playlistLayout : 'flat',
+                '',
+                '--playlist-layout',
+                'PLAYLIST_LAYOUT',
+                'playlist_layout',
             );
             $this->updateConfig(['playlist_layout' => $playlistLayout]);
         } elseif (!in_array($playlistLayout, self::VALID_PLAYLIST_LAYOUTS, true)) {
@@ -582,7 +659,7 @@ class PlaylistsSyncCommand extends BaseCommand
         $this->io->text('Fetching playlist metadata...');
 
         $failed = [];
-        $lowQualityTracks = []; // track id => warn line; one entry per unique library file
+        $lowQualityTracks = []; // track id => structured row (title/abr/codec/odg/playlists); dedup by track id
         $qualityCache = []; // srcPath => [?float abr, ?string codec, ?float odg]
         $filteredTotal = 0;
         $spotifyFilterNoteShown = false;
@@ -783,14 +860,18 @@ class PlaylistsSyncCommand extends BaseCommand
                             if ($title === '') {
                                 $title = AudioConverter::titleFromFilename($srcPath, (string)$entry['id']);
                             }
-                            $lowQualityTracks[$entry['id']] = sprintf(
-                                '%s (%s): %s kbps %s, est. ODG %s',
-                                $title,
-                                $entry['id'],
-                                AudioConverter::formatKbps($abr),
-                                AudioConverter::normalizeCodec($codec),
-                                AudioConverter::formatOdg($odg)
-                            );
+                            $lowQualityTracks[$entry['id']] = [
+                                'title' => $title,
+                                'id' => (string)$entry['id'],
+                                'abr' => $abr,
+                                'codec' => $codec,
+                                'odg' => $odg,
+                                'playlists' => [],
+                            ];
+                        }
+                        // a track can be added to several playlists — list every one it's in
+                        if (!in_array($plFolder, $lowQualityTracks[$entry['id']]['playlists'], true)) {
+                            $lowQualityTracks[$entry['id']]['playlists'][] = $plFolder;
                         }
                         if ($this->minOdgMode === 'filter') {
                             // keep low-quality originals (e.g. downloaded before the threshold
@@ -887,7 +968,7 @@ class PlaylistsSyncCommand extends BaseCommand
                             $this->minOdgMode === 'filter' ? ' (excluded from playlists)' : ''
                         ),
                     ],
-                    $lowQualityTracks
+                    self::buildLowQualitySummaryLines($lowQualityTracks, $this->lowQualityGroupBy)
                 )
             );
         }
@@ -1126,5 +1207,113 @@ class PlaylistsSyncCommand extends BaseCommand
         }
 
         return str_repeat('../', count($fromParts)).implode('/', $toParts);
+    }
+
+    /**
+     * Builds the low-quality-track summary body (everything after the "N track(s) below ..."
+     * header line) per --low-quality-group-by. "tier" (default): worst ODG tier first, tracks
+     * within a tier sorted worst-ODG-first, each track line lists every playlist it's in.
+     * "playlist": playlists as the outer grouping (alphabetical), ODG tier as the inner
+     * (worst-first) grouping — a track in N playlists appears once under each. Pure — unit-testable.
+     *
+     * @param array<string, array{title: string, id: string, abr: float, codec: ?string,
+     *     odg: float, playlists: list<string>}> $tracks keyed by track id
+     * @return list<string>
+     */
+    public static function buildLowQualitySummaryLines(array $tracks, string $groupBy): array
+    {
+        $buckets = AudioConverter::odgTierBuckets(self::MIN_ODG_TIERS);
+
+        return $groupBy === 'playlist'
+            ? self::groupLowQualityByPlaylist($tracks, $buckets)
+            : self::groupLowQualityByTier($tracks, $buckets);
+    }
+
+    /**
+     * @param array<string, array{title: string, id: string, abr: float, codec: ?string,
+     *     odg: float, playlists: list<string>}> $tracks
+     * @param list<array{label: string, floor: float}> $buckets
+     * @return list<string>
+     */
+    private static function groupLowQualityByPlaylist(array $tracks, array $buckets): array
+    {
+        $byPlaylist = [];
+        foreach ($tracks as $track) {
+            foreach ($track['playlists'] as $playlist) {
+                $byPlaylist[$playlist][] = $track;
+            }
+        }
+        ksort($byPlaylist, SORT_NATURAL | SORT_FLAG_CASE);
+
+        $lines = [];
+        foreach ($byPlaylist as $playlist => $playlistTracks) {
+            $lines[] = "$playlist:";
+            $byBucket = array_fill(0, count($buckets), []);
+            foreach ($playlistTracks as $track) {
+                $byBucket[AudioConverter::odgBucketIndex($track['odg'], $buckets)][] = $track;
+            }
+            foreach ($buckets as $i => $bucket) {
+                if ($byBucket[$i] === []) {
+                    continue;
+                }
+                usort(
+                    $byBucket[$i],
+                    static fn(array $a, array $b): int => $a['odg'] <=> $b['odg'] ?: $a['title'] <=> $b['title']
+                );
+                $lines[] = sprintf('  %s (%d track(s)):', $bucket['label'], count($byBucket[$i]));
+                foreach ($byBucket[$i] as $track) {
+                    $lines[] = '    '.self::formatLowQualityTrackLine($track);
+                }
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
+     * @param array{title: string, id: string, abr: float, codec: ?string, odg: float,
+     *     playlists: list<string>} $track
+     */
+    private static function formatLowQualityTrackLine(array $track): string
+    {
+        return sprintf(
+            '%s (%s): %s kbps %s, est. ODG %s [%s]',
+            $track['title'],
+            $track['id'],
+            AudioConverter::formatKbps($track['abr']),
+            AudioConverter::normalizeCodec($track['codec']),
+            AudioConverter::formatOdg($track['odg']),
+            implode(', ', $track['playlists'])
+        );
+    }
+
+    /**
+     * @param array<string, array{title: string, id: string, abr: float, codec: ?string,
+     *     odg: float, playlists: list<string>}> $tracks
+     * @param list<array{label: string, floor: float}> $buckets
+     * @return list<string>
+     */
+    private static function groupLowQualityByTier(array $tracks, array $buckets): array
+    {
+        $byBucket = array_fill(0, count($buckets), []);
+        foreach ($tracks as $track) {
+            $byBucket[AudioConverter::odgBucketIndex($track['odg'], $buckets)][] = $track;
+        }
+        $lines = [];
+        foreach ($buckets as $i => $bucket) {
+            if ($byBucket[$i] === []) {
+                continue;
+            }
+            usort(
+                $byBucket[$i],
+                static fn(array $a, array $b): int => $a['odg'] <=> $b['odg'] ?: $a['title'] <=> $b['title']
+            );
+            $lines[] = sprintf('%s (%d track(s)):', $bucket['label'], count($byBucket[$i]));
+            foreach ($byBucket[$i] as $track) {
+                $lines[] = '  '.self::formatLowQualityTrackLine($track);
+            }
+        }
+
+        return $lines;
     }
 }
