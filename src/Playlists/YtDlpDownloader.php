@@ -21,6 +21,7 @@ final class YtDlpDownloader
         private readonly string $sleepRequests,
         private readonly string $minOdgMode,
         private readonly ?float $minOdg,
+        private readonly string $jsRuntimes,
     ) {
     }
 
@@ -65,6 +66,8 @@ final class YtDlpDownloader
             '--write-thumbnail',
             '--convert-thumbnails',
             'jpg',
+            '--js-runtimes',
+            $this->jsRuntimes,
         ];
         if ($this->limitRate) {
             $commonArgs[] = '--limit-rate';
@@ -252,6 +255,8 @@ final class YtDlpDownloader
             $this->retrySleep,
             '--sleep-requests',
             $this->sleepRequests,
+            '--js-runtimes',
+            $this->jsRuntimes,
         ];
         if ($this->limitRate) {
             $args[] = '--limit-rate';

@@ -1,7 +1,7 @@
 # yt-dlp Tools
 
-A set of CLI tools for playlist downloading (SoundCloud/Spotify/YouTube) and USB stick setup, built on Symfony
-Console and ddev.
+A set of CLI tools for playlist downloading (SoundCloud/Spotify/YouTube) and USB stick setup, built on Symfony Console
+and ddev.
 
 ## Tools
 
@@ -28,8 +28,8 @@ ddev start
 
 Composer dependencies are installed automatically via a post-start hook.
 
-`config/` is gitignored except for a few shipped defaults and `.example` templates. Copy the templates you need to
-their real (gitignored) names and fill in machine-specific values before first use:
+`config/` is gitignored except for a few shipped defaults and `.example` templates. Copy the templates you need to their
+real (gitignored) names and fill in machine-specific values before first use:
 
 ```bash
 cp config/usb-setup.json.example config/usb-setup.json                # optional — usb:setup works without it
@@ -53,8 +53,8 @@ ddev exec bin/console list
 
 ## Development
 
-Unit tests use PHPUnit. The ddev post-start hook runs `composer install --no-dev`, so dev dependencies are stripped
-on every `ddev start`/`ddev restart` — re-install them before running the suite:
+Unit tests use PHPUnit. The ddev post-start hook runs `composer install --no-dev`, so dev dependencies are stripped on
+every `ddev start`/`ddev restart` — re-install them before running the suite:
 
 ```bash
 ddev composer install            # re-adds phpunit (dev deps)
@@ -68,8 +68,8 @@ ddev exec vendor/bin/phpunit     # or: ddev composer test
 Both commands resolve every parameter through the same layers — first hit wins:
 
 1. **CLI option** — e.g. `--out downloads`
-2. **Environment variable** — from the shell or `.env` (`DOTENV_PATH` overrides the `.env` location; both commands
-   read it)
+2. **Environment variable** — from the shell or `.env` (`DOTENV_PATH` overrides the `.env` location; both commands read
+   it)
 3. **Config file** — `config/playlists-sync.json` / `config/usb-setup.json`
 4. **Interactive prompt** — only for the parameters whose *Prompted when* column below says so;
    `-n`/`--no-interaction` skips all prompts (missing required values then fail the run)
@@ -81,9 +81,9 @@ Rules:
 - Empty env or config values count as unset (the next layer applies).
 - To re-trigger a "once"-type prompt (e.g. `min_odg`), delete its key from the config file.
 - **usb:setup exception**: its config keys are *prompt defaults*, not resolved values — the device/ISO/persistence
-  questions deliberately fire every run, pre-filled from the config file, and `USB_*` env vars act like the CLI
-  option (they suppress the prompt). Only `cache_dir` resolves through the config file. playlists:sync uses the full
-  chain for every parameter.
+  questions deliberately fire every run, pre-filled from the config file, and `USB_*` env vars act like the CLI option (
+  they suppress the prompt). Only `cache_dir` resolves through the config file. playlists:sync uses the full chain for
+  every parameter.
 
 The per-command tables below list every parameter with its CLI option, env var, config key, prompt behaviour, and
 default.
@@ -103,8 +103,8 @@ files. SoundCloud/YouTube URLs are handled by yt-dlp; Spotify URLs (`open.spotif
 - Conversions (MP3/WAV/FLAC) are done locally from the cached original — no re-downloading for format changes.
 - Per-playlist M3U8 files reference the shared library with relative paths — no duplicate audio on disk, and each
   playlist can be imported independently into Rekordbox.
-- Conversions normalize the sample rate: rates outside 44.1/48/96 kHz are resampled to the nearest supported rate ≥
-  the source (capped at 96 kHz), so odd-rate FLAC/ALAC/WAV/AIFF and streaming/video-container sources export cleanly.
+- Conversions normalize the sample rate: rates outside 44.1/48/96 kHz are resampled to the nearest supported rate ≥ the
+  source (capped at 96 kHz), so odd-rate FLAC/ALAC/WAV/AIFF and streaming/video-container sources export cleanly.
 - Each playlist prints a `Download: N new, N already in archive, N failed` summary, with the archive count derived from
   the dedup archive (see the [downloader docs](docs/playlists-sync.md#download-summary)).
 
@@ -154,17 +154,23 @@ default (see [Configuration & parameter resolution](#configuration--parameter-re
 | Sleep requests       | `--sleep-requests`        | `SLEEP_REQUESTS`        | `sleep_requests`        | never                                                                      | `2`                                            |
 | Rate limit           | `--limit-rate`            | `LIMIT_RATE`            | `limit_rate`            | never                                                                      | off                                            |
 | Pause between        | `--pause-between`         | `PAUSE_BETWEEN`         | `pause_between`         | never                                                                      | `2`                                            |
+| JS runtimes          | `--js-runtimes`           | `JS_RUNTIMES`           | `js_runtimes`           | never                                                                      | `node`                                         |
 
-One cookie file (Netscape format holds cookies for multiple domains — e.g. SoundCloud for yt-dlp plus YouTube Music
-for spotdl) serves both tools by default; the per-tool parameters override it individually. A cookie file is only
-passed on when it actually exists.
+One cookie file (Netscape format holds cookies for multiple domains — e.g. SoundCloud for yt-dlp plus YouTube Music for
+spotdl) serves both tools by default; the per-tool parameters override it individually. A cookie file is only passed on
+when it actually exists.
 
 `-n`/`--no-interaction` skips all prompts; `--input`/`--out` are then required (via CLI, env, or config).
 
+YouTube requires solving an n-sig JS challenge (yt-dlp's "EJS" system) to unlock non-image formats; without a JS runtime
+enabled, yt-dlp only auto-enables `deno` (not installed here), so downloads silently fall back to images-only and fail
+with "Requested format is not available". `js_runtimes` is passed to yt-dlp as
+`--js-runtimes` and defaults to `node`, which ships with the ddev webimage.
+
 ### .env reference
 
-Every env var below also has a `config/playlists-sync.json` equivalent (snake_case key, see the table above); env
-wins over the config file.
+Every env var below also has a `config/playlists-sync.json` equivalent (snake_case key, see the table above); env wins
+over the config file.
 
 ```dotenv
 INPUT_FILE=config/playlists.txt
@@ -200,13 +206,14 @@ RETRY_SLEEP=exp=2:10:120
 SLEEP_REQUESTS=1-3
 LIMIT_RATE=1M
 PAUSE_BETWEEN=2
+JS_RUNTIMES=node                # JS runtime yt-dlp uses to solve YouTube's n-sig/EJS challenge
 ```
 
 ### Output layout
 
 `--playlist-layout` (`PLAYLIST_LAYOUT` / `playlist_layout`) controls how the `playlists/` directory is organized.
-Default is `flat` (unchanged from before this option existed). Like `--formats`, it's prompted once interactively
-when unset anywhere, then the answer is persisted and never asked again:
+Default is `flat` (unchanged from before this option existed). Like `--formats`, it's prompted once interactively when
+unset anywhere, then the answer is persisted and never asked again:
 
 ```
 downloads/
@@ -249,17 +256,17 @@ downloads/
 
 ### Playlist aliases
 
-By default a playlist's name (used for its `.m3u8` file(s)) is auto-derived as `<Uploader> - <Playlist Title>` from
-the source API. Override it by placing a `# alias: <name>` comment directly above that playlist's URL in the input
-file — nothing (blank line, other comment) may sit in between, and it only applies to the very next URL:
+By default a playlist's name (used for its `.m3u8` file(s)) is auto-derived as `<Uploader> - <Playlist Title>` from the
+source API. Override it by placing a `# alias: <name>` comment directly above that playlist's URL in the input file —
+nothing (blank line, other comment) may sit in between, and it only applies to the very next URL:
 
 ```
 # alias: My Chill Mix
 https://soundcloud.com/stefan-ripper/sets/tek
 ```
 
-Plain `#` comments (no `alias:` marker) are unaffected and keep working exactly as before — purely human-readable
-notes with no effect on naming, e.g. the section headers already used in `config/playlists.txt`.
+Plain `#` comments (no `alias:` marker) are unaffected and keep working exactly as before — purely human-readable notes
+with no effect on naming, e.g. the section headers already used in `config/playlists.txt`.
 
 ### Rekordbox import
 
@@ -271,15 +278,15 @@ stored once in the shared library.
 ## usb:setup
 
 Installs Ventoy (MBR, FAT32) on a USB stick, optionally downloads a Debian live ISO and configures Ventoy persistence.
-Can also duplicate an already-set-up stick onto a new one of any size ≥ the used payload (`--source-device`): Ventoy
-is installed on the target, then the source's data partition (ISO, persistence incl. user data, `/software/`) is
-mirrored via rsync from a read-only mount.
+Can also duplicate an already-set-up stick onto a new one of any size ≥ the used payload (`--source-device`): Ventoy is
+installed on the target, then the source's data partition (ISO, persistence incl. user data, `/software/`) is mirrored
+via rsync from a read-only mount.
 
 Multiple target devices are supported in a single run: pass a comma-separated list (`--device /dev/sdb,/dev/sdc`) or
-select several from the interactive multi-select prompt. Devices are set up **sequentially, not in parallel** — the
-ISO download and software downloads are still fetched only once and reused for every device. One device failing
-(e.g. a partition that never appears) does not abort the rest of the batch; a per-device pass/fail summary is
-printed at the end and the command exits non-zero if any device failed.
+select several from the interactive multi-select prompt. Devices are set up **sequentially, not in parallel** — the ISO
+download and software downloads are still fetched only once and reused for every device. One device failing
+(e.g. a partition that never appears) does not abort the rest of the batch; a per-device pass/fail summary is printed at
+the end and the command exits non-zero if any device failed.
 
 All required tools (dosfstools, e2fsprogs, util-linux, Ventoy) are installed automatically in the ddev container.
 
@@ -294,11 +301,11 @@ Interactive mode lists detected block devices and prompts for each option. Answe
 
 ### Parameters
 
-Resolution: CLI option → env var → prompt → default. **usb:setup env vars behave like their CLI option — they
-suppress the prompt.** The config keys are deliberately *not* part of value resolution: they only pre-fill the
-prompt defaults (the device/ISO/persistence questions fire every run on purpose), and prompt answers are written
-back to `config/usb-setup.json`. Only `cache_dir` resolves through the config file too (it is never prompted).
-usb:setup reads the same `.env` file as playlists:sync.
+Resolution: CLI option → env var → prompt → default. **usb:setup env vars behave like their CLI option — they suppress
+the prompt.** The config keys are deliberately *not* part of value resolution: they only pre-fill the prompt defaults (
+the device/ISO/persistence questions fire every run on purpose), and prompt answers are written back to
+`config/usb-setup.json`. Only `cache_dir` resolves through the config file too (it is never prompted). usb:setup reads
+the same `.env` file as playlists:sync.
 
 | Parameter          | CLI option           | Env var                | Config key                             | Prompted when                                                                     | Default                            |
 |--------------------|----------------------|------------------------|----------------------------------------|-----------------------------------------------------------------------------------|------------------------------------|
@@ -318,8 +325,8 @@ usb:setup reads the same `.env` file as playlists:sync.
 `--yes`/`-y`/`USB_YES` skips confirmation prompts (wipe/update/continue-anyway); `-n`/`--no-interaction` skips
 **all** prompts and implies `-y` — the device is then required (via `--device` or `USB_DEVICE`).
 
-`--device`/`USB_DEVICE` accept a comma-separated list (e.g. `--device /dev/sdb,/dev/sdc`) to set up several sticks
-in one run; per-device name history is recorded under `dev_<name>_device`/`dev_<name>_device_name` config keys.
+`--device`/`USB_DEVICE` accept a comma-separated list (e.g. `--device /dev/sdb,/dev/sdc`) to set up several sticks in
+one run; per-device name history is recorded under `dev_<name>_device`/`dev_<name>_device_name` config keys.
 
 ### ISO download
 
@@ -330,31 +337,32 @@ variants: `standard`, `gnome`, `kde`, `cinnamon`, `lxde`, `lxqt`, `mate`, `xfce`
 
 ### Software downloads
 
-By default, additional software (Rekordbox, the T-Racks 8x8 Matrix Digital Processor Editor, and an Ableton Live
-trial) can be queued for copying onto the stick's `/software/` folder. Entries are read from
+By default, additional software (Rekordbox, the T-Racks 8x8 Matrix Digital Processor Editor, and an Ableton Live trial)
+can be queued for copying onto the stick's `/software/` folder. Entries are read from
 `config/usb-downloads.txt`, one per line (`#` comments allowed):
 
 - `https://...` / `http://...` — downloaded and copied onto the stick.
 - `magnet:`/`urn:btmh:` — reserved for future torrent support; currently just logged and skipped.
 - A local file or directory path — copied onto the stick as-is, no download needed. The default file already lists
-  `config/usb-manual-downloads/` for anything you download by hand (e.g. Traktor Pro via Native Access, Traktor DJ2
-  via a third-party mirror, Resolume Arena) — just drop the installer in there. Add `/**` to a directory path (e.g.
+  `config/usb-manual-downloads/` for anything you download by hand (e.g. Traktor Pro via Native Access, Traktor DJ2 via
+  a third-party mirror, Resolume Arena) — just drop the installer in there. Add `/**` to a directory path (e.g.
   `config/usb-manual-downloads/**`) to scan it recursively, preserving subfolder structure under `/software/`.
 
 Override the file with `--downloads-file`, or type `-` at the prompt to skip software provisioning entirely.
 
 ### Persistent config
 
-Interactive answers are saved to `config/usb-setup.json` and used as defaults on the next run. Edit the file directly
-to change the cache directory, downloads file, or other defaults.
+Interactive answers are saved to `config/usb-setup.json` and used as defaults on the next run. Edit the file directly to
+change the cache directory, downloads file, or other defaults.
 
 ---
 
 ## Troubleshooting
 
-| Symptom                           | Fix                                                                                          |
-|-----------------------------------|----------------------------------------------------------------------------------------------|
-| 403/429 errors                    | Add `config/cookies.txt` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env` |
-| Missing metadata / thumbnails     | `ddev exec pip install -U yt-dlp`                                                            |
-| Want to add a format later        | Re-run with updated `FORMATS` — originals are cached, only new conversions run               |
-| USB device not found in container | Run `ddev restart` — privileged mode is enabled via `.ddev/docker-compose.privileged.yaml`   |
+| Symptom                                                                     | Fix                                                                                                                   |
+|-----------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| 403/429 errors                                                              | Add `config/cookies.txt` + set `LIMIT_RATE`, `SLEEP_REQUESTS`, `EXTRACTOR_RETRIES` in `.env`                          |
+| Missing metadata / thumbnails                                               | `ddev exec pip install -U yt-dlp`                                                                                     |
+| YouTube: "n challenge solving failed" / "Requested format is not available" | Set `JS_RUNTIMES` (default `node`) in `.env` — YouTube requires a working JS runtime to solve its n-sig/EJS challenge |
+| Want to add a format later                                                  | Re-run with updated `FORMATS` — originals are cached, only new conversions run                                        |
+| USB device not found in container                                           | Run `ddev restart` — privileged mode is enabled via `.ddev/docker-compose.privileged.yaml`                            |

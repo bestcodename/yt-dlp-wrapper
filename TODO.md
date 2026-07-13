@@ -30,8 +30,8 @@
     Fetching playlist metadata...
     1/27 [=>--------------------------]   3% /stefan-ripper/sets/dj-set-hardt  2/27 [==>-------------------------]   7% /stefan-ripper/sets/set-happy-te  3/27 [===>------------------------]  11% /stefan-ripper/sets/set-frenchco  4/27 [====>-----------------------]  14% /stefan-ripper/sets/set-dark-tek  5/27 [=====>----------------------]  18% /stefan-ripper/sets/set-chill-af 11/27 [===========>----------------]  40% /stefan-ripper/sets/scheibensamm 16/27 [================>-----------]  59% /stefan-ripper/sets/forest-darkp 23/27 [=======================>----]  85% /sara-zironi/sets/nagtek
    ```
-   also the "tracks" and the "overall" progress bars seem to get drawn over each other (one is getting drawn over the
-   other when the line is too long) but should always be displayed simultaneously if possible
+   also the "tracks" and the "overall" progress bars seem to get drawn over each other (one is seemingly getting drawn
+   over the other when the line is too long) but should always be displayed simultaneously if possible
 
 8. on cli command execution occasionally (e.g. daily or weekly) check and inform about available updates of this project
     + bonus: update automatically too

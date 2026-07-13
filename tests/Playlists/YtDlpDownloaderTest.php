@@ -112,16 +112,6 @@ final class YtDlpDownloaderTest extends TestCase
         $downloader->getPlaylistIdentityAndEntries('https://soundcloud.com/dj/sets/my-list', self::io());
     }
 
-    private static function makeDownloader(FakeProcessRunner $runner): YtDlpDownloader
-    {
-        return new YtDlpDownloader($runner, 'yt-dlp', null, '3', null, '1', '0', 'warn', null);
-    }
-
-    private static function io(): SymfonyStyle
-    {
-        return new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
-    }
-
     public function testGetPlaylistIdentityAndEntriesInvalidJsonThrows(): void
     {
         $fake = new FakeProcessRunner();
@@ -159,6 +149,28 @@ final class YtDlpDownloaderTest extends TestCase
             ],
             $result
         );
+    }
+
+    public function testGetPlaylistIdentityAndEntriesPassesJsRuntimes(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('-J', 0, json_encode(['title' => 'Set', 'id' => 's1', 'uploader' => 'dj', 'entries' => []]));
+        $downloader = self::makeDownloader($fake);
+
+        $downloader->getPlaylistIdentityAndEntries('https://soundcloud.com/dj/sets/my-list', self::io());
+
+        self::assertTrue($fake->ran('--js-runtimes'));
+        self::assertTrue($fake->ran("'node'"));
+    }
+
+    private static function makeDownloader(FakeProcessRunner $runner): YtDlpDownloader
+    {
+        return new YtDlpDownloader($runner, 'yt-dlp', null, '3', null, '1', '0', 'warn', null, 'node');
+    }
+
+    private static function io(): SymfonyStyle
+    {
+        return new SymfonyStyle(new ArrayInput([]), new BufferedOutput());
     }
 
     /**
