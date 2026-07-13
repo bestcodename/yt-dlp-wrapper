@@ -207,14 +207,38 @@ final class AudioConverter
      */
     public static function mapInfoJsonToTags(array $json): array
     {
-        return [
+        $tags = [
             'title' => (string)($json['title'] ?? ''),
-            'artist' => (string)($json['uploader'] ?? ($json['artist'] ?? '')),
+            'artist' => self::resolveArtistTag($json),
             'album' => (string)($json['playlist_title'] ?? ($json['album'] ?? '')),
             'genre' => (string)($json['genre'] ?? ''),
             'comment' => (string)($json['description'] ?? ''),
             'date' => (string)($json['upload_date'] ?? ''),
         ];
+
+        return array_map(self::repairDoubleEscapedUnicode(...), $tags);
+    }
+
+    /**
+     * Artist tag priority: explicit music-metadata fields ("artist", "creator" — populated by
+     * yt-dlp when a video is Content-ID-matched to a real song) win over the generic
+     * uploader/channel name, since a channel is often a label or reposting account, not the
+     * performing artist. Falls back to uploader/channel when no such field exists (the common
+     * case for SoundCloud and plain YouTube videos). A present-but-empty field is treated as
+     * absent so it doesn't block a later, valid one. Pure — unit-testable.
+     *
+     * @param array<string, mixed> $json
+     */
+    private static function resolveArtistTag(array $json): string
+    {
+        foreach (['artist', 'creator', 'uploader', 'channel'] as $key) {
+            $v = trim((string)($json[$key] ?? ''));
+            if ($v !== '') {
+                return $v;
+            }
+        }
+
+        return '';
     }
 
     /**
@@ -226,6 +250,23 @@ final class AudioConverter
         $base = pathinfo($srcPath, PATHINFO_FILENAME);
 
         return trim((string)preg_replace('/^'.preg_quote($id, '/').'\s*-\s*/', '', $base));
+    }
+
+    /**
+     * Repairs a double-escaped unicode sequence occasionally present in yt-dlp's SoundCloud
+     * metadata: some fields (seen so far: "artist") come through as literally e.g. `ChôKô`
+     * — the info.json's OWN JSON escaping decodes correctly, but the source data underneath
+     * already contained an extra backslash, so the "ô" that should have become "ô" survives
+     * as six literal characters instead. A plain string with no such sequence is returned
+     * unchanged. Pure — unit-testable.
+     */
+    private static function repairDoubleEscapedUnicode(string $value): string
+    {
+        return (string)preg_replace_callback(
+            '/\\\\u([0-9A-Fa-f]{4})/',
+            static fn(array $m): string => mb_chr((int)hexdec($m[1]), 'UTF-8'),
+            $value
+        );
     }
 
     /**
