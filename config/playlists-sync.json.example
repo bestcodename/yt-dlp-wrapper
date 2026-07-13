@@ -20,6 +20,7 @@
     "retry_sleep": "exp=2:10:120",
     "sleep_requests": "2",
     "limit_rate": "1M",
+    "js_runtimes": "node",
     "pause_between": "2",
     "lib_filename_template": "%(id)s - %(title)s",
     "library_dir": "./downloads/library",

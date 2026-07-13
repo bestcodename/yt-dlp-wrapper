@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-07-13
+
+### Fixed
+
+- `playlists:sync` — YouTube downloads were failing with "n challenge solving failed" and then
+  "Requested format is not available" (silently falling back to images-only formats). Upstream yt-dlp now requires an
+  external JS runtime to solve YouTube's n-sig/EJS challenge and only auto-enables `deno`, which isn't installed in this
+  project's ddev image; `node` (already present) was never being passed. New
+  `--js-runtimes` / `JS_RUNTIMES` / `js_runtimes` option (default `node`) is now passed to yt-dlp for both playlist
+  metadata fetches and downloads
+
 ## [0.9.2] - 2026-07-13
 
 ### Fixed

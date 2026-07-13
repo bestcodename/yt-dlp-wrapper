@@ -61,6 +61,7 @@ class PlaylistsSyncCommand extends BaseCommand
     private string $extractorRetries;
     private string $ffmpegBin;
     private string $ffprobeBin;
+    private string $jsRuntimes;
     private ?string $limitRate;
     private ?float $minOdg;
     private string $minOdgMode;
@@ -172,6 +173,12 @@ class PlaylistsSyncCommand extends BaseCommand
             ->addOption('ffprobe-bin', null, InputOption::VALUE_REQUIRED, 'ffprobe binary')
             ->addOption('extractor-retries', null, InputOption::VALUE_REQUIRED, 'yt-dlp --extractor-retries value')
             ->addOption('retry-sleep', null, InputOption::VALUE_REQUIRED, 'yt-dlp --retry-sleep value')
+            ->addOption(
+                'js-runtimes',
+                null,
+                InputOption::VALUE_REQUIRED,
+                'yt-dlp --js-runtimes value (e.g. "node", "deno") — needed to solve YouTube\'s n-sig/EJS challenge'
+            )
             ->addOption(
                 'sleep-requests',
                 null,
@@ -354,6 +361,13 @@ class PlaylistsSyncCommand extends BaseCommand
             $this->resolveParam($input->getOption('sleep-requests'), 'SLEEP_REQUESTS', $config, 'sleep_requests', '2')
         );
         $this->limitRate = $this->resolveParam($input->getOption('limit-rate'), 'LIMIT_RATE', $config, 'limit_rate');
+        $this->jsRuntimes = $this->resolveParam(
+            $input->getOption('js-runtimes'),
+            'JS_RUNTIMES',
+            $config,
+            'js_runtimes',
+            'node'
+        );
         $this->pauseBetween = (int)$this->resolveParam(
             $input->getOption('pause-between'),
             'PAUSE_BETWEEN',
@@ -438,6 +452,7 @@ class PlaylistsSyncCommand extends BaseCommand
             $this->sleepRequests,
             $this->minOdgMode,
             $this->minOdg,
+            $this->jsRuntimes,
         );
 
         $libFilenameTemplate = $this->resolveParam(
