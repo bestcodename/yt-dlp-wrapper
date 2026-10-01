@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-10-01
+
+### Changed
+
+- `usb:setup` — scratch mode with Ventoy skipped now writes a fresh MBR with one FAT32 LBA partition (type `0x0c`)
+  across the whole stick before formatting it, via `wipefs -a` and `parted`. Previously it kept the stick's old layout
+  and only reformatted partition 1, so FAT32 could end up behind partition type `0x07` or inside a leftover GPT. Update
+  mode and sticks that already carry Ventoy keep their layout
+- `usb:setup` — a stick counts as Ventoy only when partition 2 carries the label `VTOYEFI` (read via `blkid`), no longer
+  whenever it has two or more partitions
+- `usb:setup` — the summary row "Partition table" names the fresh MBR, and `wipefs`/`parted` are checked up front when
+  Ventoy is skipped
+
+### Fixed
+
+- `usb:setup` — sticks set up without Ventoy could come out unrecognized on some hosts, as seen once on a MacBook. The
+  suspected cause, FAT32 behind partition type `0x07`, is unconfirmed until a Mac counter-test (see `TODO.md`)
+
+## [0.10.1] - 2026-07-20
+
+### Added
+
+- `.idea/php.xml` vendor include paths for PHPUnit, Symfony and other dependencies
+
+### Changed
+
+- `TODO.md` entries revised and expanded (usb:setup debugging, `playlists:sync` CLI output on narrow terminals, torrent
+  support, persistent live installs, partition options)
+
 ## [0.10.0] - 2026-07-14
 
 ### Added
