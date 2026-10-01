@@ -70,6 +70,55 @@ final class PartitionFormatter
         );
     }
 
+    /**
+     * Replaces whatever layout the stick had with a fresh MBR holding one FAT32 LBA partition
+     * (type 0x0c) across the whole device. Without it, a stick's history decides the result:
+     * a factory exFAT stick or an old Ventoy stick keeps partition type 0x07 (NTFS/exFAT) around
+     * the new FAT32, and a GPT stick keeps its GPT and its other partitions. That is the suspected
+     * reason a MacBook did not recognize such a stick, unconfirmed because no Mac was available.
+     */
+    public function writeFat32PartitionTable(string $device, OutputInterface $output, SymfonyStyle $io): void
+    {
+        $io->text("Writing a fresh MBR partition table on $device (one FAT32 LBA partition)...");
+        $devArg = escapeshellarg($device);
+
+        [, $list] = $this->runCmd('lsblk -lnpo NAME '.$devArg.' 2>/dev/null');
+        foreach (self::childPartitions($list, $device) as $partition) {
+            $partArg = escapeshellarg($partition);
+            $this->runCmd("nsenter -t 1 --mount -- umount -f $partArg 2>/dev/null");
+            $this->runCmd('fuser -km '.$partArg.' 2>/dev/null');
+            $this->runCmd('umount -f '.$partArg.' 2>/dev/null');
+        }
+
+        [$exit] = $this->runCmd('wipefs -a '.$devArg.' 2>&1', true, $output);
+        if ($exit !== 0) {
+            throw new RuntimeException("wipefs failed on $device — is a partition still mounted on the host?");
+        }
+        [$exit] = $this->runCmd(
+            'parted -s '.$devArg.' mklabel msdos mkpart primary fat32 1MiB 100% set 1 lba on 2>&1',
+            true,
+            $output
+        );
+        if ($exit !== 0) {
+            throw new RuntimeException("parted failed to write the partition table on $device.");
+        }
+        // reformatFat32() then waits for the new partition node, so no udevadm settle here
+        $this->runCmd('partprobe '.$devArg.' 2>/dev/null');
+    }
+
+    /**
+     * Partition paths from `lsblk -lnpo NAME <device>` output, without the device itself.
+     * Pure — unit-testable.
+     *
+     * @return list<string>
+     */
+    public static function childPartitions(string $lsblkOutput, string $device): array
+    {
+        $names = array_map('trim', explode("\n", $lsblkOutput));
+
+        return array_values(array_filter($names, static fn(string $n): bool => $n !== '' && $n !== $device));
+    }
+
     public function reformatFat32(
         string $partition,
         OutputInterface $output,
