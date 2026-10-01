@@ -316,6 +316,10 @@ Can also duplicate an already-set-up stick onto a new one of any size ≥ the us
 installed on the target, then the source's data partition (ISO, persistence incl. user data, `/software/`) is mirrored
 via rsync from a read-only mount.
 
+With Ventoy skipped (`--install-ventoy no`) in scratch mode, a stick without Ventoy gets a fresh MBR with one FAT32 LBA
+partition (type `0x0c`) across the whole stick instead of keeping its old layout. Update mode and sticks that already
+carry Ventoy keep their layout. See [docs/usb-setup.md](docs/usb-setup.md#partition-layout-after-setup).
+
 Multiple target devices are supported in a single run: pass a comma-separated list (`--device /dev/sdb,/dev/sdc`) or
 select several from the interactive multi-select prompt. Devices are set up **sequentially, not in parallel** — the ISO
 download and software downloads are still fetched only once and reused for every device. One device failing

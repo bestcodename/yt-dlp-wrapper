@@ -633,6 +633,10 @@ class UsbSetupCommand extends BaseCommand
                 ($this->binaryChecker)('rsync');
                 ($this->binaryChecker)('blockdev');
             }
+            if (!$installVentoy && !$isUpdate) {
+                ($this->binaryChecker)('wipefs');
+                ($this->binaryChecker)('parted');
+            }
             $ventoyBin = $this->ventoyInstaller->findBin($ventoyBinHint);
         } catch (RuntimeException $e) {
             $this->io->error($e->getMessage());
@@ -732,7 +736,7 @@ class UsbSetupCommand extends BaseCommand
         $this->io->section($isUpdate ? 'USB Setup — Update Summary' : 'USB Setup — Summary');
         $rows = [
             ['Mode', $isUpdate ? 'update (skip completed steps)' : 'redo from scratch'],
-            ['Partition table', $installVentoy ? 'MBR' : 'existing (Ventoy skipped)'],
+            ['Partition table', self::partitionTableSummary($installVentoy, $isUpdate)],
             ['Ventoy binary', $ventoyBin],
         ];
         if ($isDuplicate) {
@@ -942,12 +946,19 @@ class UsbSetupCommand extends BaseCommand
                             $this->io->warning("$dataPartition left untouched (not FAT32).");
                         }
                     }
+                    // Scratch mode without Ventoy owns the whole stick, so it gets a fresh MBR with
+                    // one FAT32 LBA partition instead of inheriting the stick's old layout. A stick
+                    // that already carries Ventoy keeps it, since Ventoy was only skipped, not removed.
+                    $freshTable = !$isUpdate && !$installVentoy && !$ventoyOnStick[$device];
                     if ($doReformat) {
                         try {
+                            if ($freshTable) {
+                                $this->partitionFormatter->writeFat32PartitionTable($device, $output, $this->io);
+                            }
                             $this->partitionFormatter->reformatFat32($dataPartition, $output, $this->io, $dataLabel);
                         } catch (Throwable $t) {
                             $messages = [$t->getMessage()];
-                            if (!$installVentoy) {
+                            if (!$installVentoy && !$freshTable) {
                                 $messages[] = "If $device has no partition table yet, rerun and choose ".
                                     "'install/update Ventoy' to create one.";
                             }
@@ -1237,6 +1248,20 @@ class UsbSetupCommand extends BaseCommand
     private static function mountSuffixForDevice(string $device): string
     {
         return 'dst_'.substr($device, 5);
+    }
+
+    /**
+     * Summary-table value for the partition table each run leaves behind. Pure — unit-testable.
+     */
+    public static function partitionTableSummary(bool $installVentoy, bool $isUpdate): string
+    {
+        if ($installVentoy) {
+            return 'MBR (Ventoy)';
+        }
+
+        return $isUpdate
+            ? 'existing (Ventoy skipped)'
+            : 'fresh MBR, one FAT32 LBA partition (kept on sticks that already have Ventoy)';
     }
 
     protected function getConfigPath(): string

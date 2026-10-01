@@ -17,6 +17,9 @@ All tools — `dosfstools`, `e2fsprogs`, `util-linux`, and the latest Ventoy rel
 | `fallocate`                | util-linux                                | Allocate persistence file                    |
 | `mount` / `umount`         | util-linux                                | Loop-mount persistence image                 |
 | `lsblk`                    | util-linux                                | List block devices                           |
+| `wipefs`                   | util-linux                                | Clear old signatures before a fresh MBR      |
+| `parted`                   | parted                                    | Write the fresh MBR when Ventoy is skipped   |
+| `blkid`                    | util-linux                                | Detect Ventoy by partition 2's `VTOYEFI`     |
 | `rsync`                    | rsync                                     | Mirror payload when duplicating a stick      |
 | `Ventoy2Disk.sh`           | ventoy (auto-downloaded to `/opt/ventoy`) | Install Ventoy bootloader                    |
 
@@ -229,7 +232,9 @@ ddev exec bin/console usb:setup --help
 
 ## What it does — step by step
 
-1. **Installs Ventoy** — runs `Ventoy2Disk.sh -I /dev/sdX` (MBR mode, no `-g` flag).
+1. **Installs Ventoy** — runs `Ventoy2Disk.sh -I /dev/sdX` (MBR mode, no `-g` flag). With Ventoy skipped in scratch
+   mode on a stick that has no Ventoy, it instead writes a fresh MBR with one FAT32 LBA partition (type `0x0c`) across
+   the whole stick, via `wipefs -a` and `parted`. See [Partition layout after setup](#partition-layout-after-setup).
 2. **Reformats partition 1 as FAT32** — Ventoy defaults to exFAT; this step overrides it with
    `mkfs.fat -F 32 -n VENTOY`.
 3. **Copies the Debian ISO** — plain `cp` into the FAT32 partition root.
@@ -246,11 +251,34 @@ afterwards. The mirror excludes OS artifacts (`System Volume Information`, `.Tra
 
 ## Partition layout after setup
 
+With Ventoy:
+
 ```
 /dev/sdX       — MBR partition table
   /dev/sdX1    — FAT32 "VENTOY"  (data: ISOs, persistence.dat, ventoy/, software/)
   /dev/sdX2    — Ventoy system partition (do not touch)
 ```
+
+With Ventoy skipped (`--install-ventoy no`) in scratch mode:
+
+```
+/dev/sdX       — fresh MBR partition table
+  /dev/sdX1    — FAT32 "USBDATA", partition type 0x0c (W95 FAT32 LBA), whole stick
+```
+
+Before 0.10.2 the tool kept whatever layout the stick had and only reformatted partition 1. The result then depended
+on the stick's history. A factory exFAT stick or an old Ventoy stick kept partition type `0x07` (HPFS/NTFS/exFAT)
+around the new FAT32, and a GPT stick kept its GPT and its other partitions. A MacBook did not recognize one such
+stick. The suspected cause is that macOS does not mount FAT32 behind a partition type that says NTFS/exFAT. That
+cause is unconfirmed, because no Mac was available for the counter-test (see [../TODO.md](../TODO.md)).
+
+The fresh table is not written in three cases:
+
+- In update mode (`--update`) the layout stays as it is.
+- On a stick that already carries Ventoy, Ventoy was only skipped and not removed, so partition 2 and the layout stay.
+  A stick counts as Ventoy only when partition 2 has the label `VTOYEFI`, so a Mac or Windows GPT stick with an EFI
+  partition 2 gets the fresh table.
+- With Ventoy installed, `Ventoy2Disk.sh` writes the table itself.
 
 ## ventoy.json written to the stick
 

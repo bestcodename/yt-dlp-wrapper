@@ -96,6 +96,7 @@ final class UsbSetupCommandFlowTest extends TestCase
             $display = $this->display($tester);
             self::assertStringContainsString('Partition 1 formatted as FAT32.', $display);
             self::assertStringNotContainsString('Data partition mirrored.', $display); // not duplicate mode
+            self::assertFalse($fake->ran('parted ')); // Ventoy on the stick: skipped, not removed
             self::assertStringContainsString('USB stick(s) ready.', $display);
             self::assertStringContainsString('1 software installer(s) copied to /software/', $display);
             self::assertTrue($fake->ran('cp --no-preserve=all '.escapeshellarg($iso)));
@@ -122,6 +123,7 @@ final class UsbSetupCommandFlowTest extends TestCase
             ->on('which ', 0, "/usr/bin/stub\n")
             ->on('blkid -o value -s TYPE', 0, "$fstype\n")
             ->on('blkid -o value -s LABEL', 0, "VENTOY\n")
+            ->on('blkid -o export', 0, "LABEL=VTOYEFI\nTYPE=vfat\n")
             ->on('bash ./', 0, "Ventoy install finished\n");
     }
 
@@ -132,6 +134,16 @@ final class UsbSetupCommandFlowTest extends TestCase
         $app->addCommand($this->command);
 
         return new CommandTester($this->command);
+    }
+
+    private function commandIndex(FakeProcessRunner $fake, string $needle): int
+    {
+        foreach ($fake->commands as $i => $cmd) {
+            if (str_contains($cmd, $needle)) {
+                return $i;
+            }
+        }
+        self::fail("No command containing \"$needle\" ran.");
     }
 
     private function display(CommandTester $tester): string
@@ -646,6 +658,47 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertTrue($fake->ran("mkfs.fat -F 32 -n 'USBDATA'"));
         self::assertStringContainsString('Copy files onto the data partition (FAT32) of each stick', $display);
         self::assertFalse($fake->ran('bash ./'));
+        self::assertStringContainsString('Partition table fresh MBR, one FAT32 LBA partition', $display);
+        self::assertStringContainsString('Writing a fresh MBR partition table on /dev/null', $display);
+        $wipefs = $this->commandIndex($fake, "wipefs -a '/dev/null'");
+        $parted = $this->commandIndex($fake, "parted -s '/dev/null' mklabel msdos mkpart primary fat32 1MiB 100% set 1 lba on");
+        $mkfs = $this->commandIndex($fake, 'mkfs.fat -F 32');
+        self::assertLessThan($parted, $wipefs);
+        self::assertLessThan($mkfs, $parted);
+    }
+
+    public function testScratchSkipVentoyPartedFailureAbortsWithoutVentoyHint(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_NO_VENTOY)->on('parted ', 1, "Error: Partition(s) on /dev/null are being used.\n");
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1'];
+
+        $tester->setInputs(['', '1', '', '2', '-', 'yes', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::FAILURE, $exit);
+        $display = $this->display($tester);
+        self::assertStringContainsString('parted failed to write the partition table on /dev/null.', $display);
+        self::assertStringNotContainsString('has no partition table yet', $display);
+        self::assertFalse($fake->ran('mkfs.fat -F 32'));
+    }
+
+    public function testScratchInstallVentoyLeavesPartitionTableToVentoy(): void
+    {
+        file_put_contents($this->configPath, "{}\n");
+        $fake = $this->makeFake(self::LSBLK_NO_VENTOY);
+        $tester = $this->makeTester($fake);
+        $this->command->existingPartitions = ['/dev/null1', '/dev/null2'];
+
+        // mode default (scratch), Ventoy default (install), payload default, ISO skip, no downloads, 2× wipe confirm
+        $tester->setInputs(['', '', '', '2', '-', 'yes', 'yes']);
+        $exit = $tester->execute(['--device' => '/dev/null'], ['interactive' => true]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        self::assertTrue($fake->ran('bash ./'));
+        self::assertFalse($fake->ran('parted '));
+        self::assertFalse($fake->ran('wipefs '));
     }
 
     #[DataProvider('ventoyFlagProvider')]
@@ -732,6 +785,7 @@ final class UsbSetupCommandFlowTest extends TestCase
         self::assertStringContainsString('already FAT32 (VENTOY) — skipping reformat.', $display);
         self::assertStringNotContainsString('Partition 1 is not FAT32', $display);
         self::assertFalse($fake->ran('mkfs.fat -F 32'));
+        self::assertFalse($fake->ran('parted '));
     }
 
     public function testUsbUpdateEnvSkipsModePrompt(): void

@@ -562,17 +562,47 @@ final class DeviceInspector
     }
 
     /**
-     * Ventoy always leaves a second (VTOYEFI) partition behind. Detected via lsblk (sysfs-backed,
-     * reliable inside the container) with a /dev-node fallback when lsblk yields nothing.
+     * Ventoy always leaves a second partition labelled VTOYEFI behind. The partition count comes
+     * from lsblk (sysfs-backed, reliable inside the container) and the label from blkid, because
+     * lsblk reports every LABEL as null in the container, which has no udev database. A second
+     * partition with another label (a Mac or Windows GPT stick's EFI partition, say) is not
+     * Ventoy. blkid exits 2 when partition 2 holds no recognisable filesystem, which VTOYEFI
+     * always does. On any other blkid failure the count alone decides, which errs on the side of
+     * keeping the stick's layout. Falls back to the /dev node when lsblk yields nothing.
      */
     public function hasVentoyPartition(string $device): bool
     {
         $info = $this->lsblkInfo($device);
         if (!empty($info)) {
-            return count(self::partitionNames($info)) >= 2;
+            if (count(self::partitionNames($info)) < 2) {
+                return false;
+            }
+            [$exit, $export] = $this->runCmd(
+                'blkid -o export '.escapeshellarg(self::partitionPath($device, 2)).' 2>/dev/null'
+            );
+
+            return match ($exit) {
+                0 => self::exportedLabel($export) === 'VTOYEFI',
+                2 => false,
+                default => true,
+            };
         }
 
         return ($this->fileExists)(self::partitionPath($device, 2));
+    }
+
+    /**
+     * The LABEL value from `blkid -o export` output, or '' when there is none. Pure — unit-testable.
+     */
+    public static function exportedLabel(string $export): string
+    {
+        foreach (explode("\n", $export) as $line) {
+            if (str_starts_with($line, 'LABEL=')) {
+                return trim(substr($line, 6));
+            }
+        }
+
+        return '';
     }
 
     /**

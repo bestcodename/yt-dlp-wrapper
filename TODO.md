@@ -1,9 +1,9 @@
-1. usb:setup fix bug: sticks set up via the non-ventoy path can come out unrecognized on some hosts — a MacBook did not
-   recognize the last such stick. This is a correctness bug in usb:setup's core job (producing usable DJ USB drives):
-   the tool can silently output a drive that some hardware won't read/boot, so its results can't be trusted until it's
-   fixed. Latent and systemic, not a one-off — any stick prepared the same (non-ventoy) way is affected and it will
-   recur. The original stick is gone, but it is reproducible: set one up the same way and re-test on the failing host.
-   Investigate root cause (partition table gpt/mbr, format, boot flags, filesystem compatibility).
+1. usb:setup Mac counter-test for the non-Ventoy fresh MBR (ca. 15 Minuten). Since 0.10.2, scratch mode with Ventoy
+   skipped writes a fresh MBR with one FAT32 LBA partition (type `0x0c`). Before that, a stick kept its old layout, and
+   a MacBook did not recognize one such stick. The suspected cause, FAT32 behind partition type `0x07`, is unconfirmed.
+   Set up one stick with `--install-ventoy no` and plug it into a Mac. If it mounts, the cause is confirmed. If it does
+   not, look at the boot sector next (`mkfs.fat` options, sector size). Also open is whether Ventoy's own data
+   partition, which is FAT32 behind type `0x07` as well, has the same problem on macOS.
 
 2. update project name description and url to something more fitting (e.g. DJ USB Tools)
 
@@ -85,3 +85,10 @@
     (both with and without ventoy install)
 
 13. usb:setup add persistent windows live install option next to the debian one?
+
+14. usb:setup `udevadm` is not installed in the ddev container, so every `udevadm settle` call is a no-op, and its
+    `sh: 1: udevadm: not found` line reaches the output despite `2>/dev/null`. Either install `udev` in
+    `.ddev/web-build/Dockerfile` or drop the calls.
+
+15. usb:setup `--downloads-file -` is rejected with "Downloads file not found: -", while the free-text prompt accepts
+    `-` as skip. The CLI option and `USB_DOWNLOADS_FILE` should accept `-` too.

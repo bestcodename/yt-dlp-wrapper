@@ -15,6 +15,16 @@ use Symfony\Component\Console\Style\SymfonyStyle;
 
 final class PartitionFormatterTest extends TestCase
 {
+    public function testChildPartitionsDropsDeviceAndBlankLines(): void
+    {
+        self::assertSame(
+            ['/dev/sdb1', '/dev/sdb2'],
+            PartitionFormatter::childPartitions("/dev/sdb\n/dev/sdb1\n/dev/sdb2\n\n", '/dev/sdb')
+        );
+        self::assertSame([], PartitionFormatter::childPartitions("/dev/sdb\n", '/dev/sdb'));
+        self::assertSame([], PartitionFormatter::childPartitions('', '/dev/sdb'));
+    }
+
     public function testMountFailureThrows(): void
     {
         $fake = new FakeProcessRunner();
@@ -122,5 +132,56 @@ final class PartitionFormatterTest extends TestCase
 
         self::assertTrue($fake->ran("umount '$dir'"));
         self::assertDirectoryDoesNotExist($dir);
+    }
+
+    public function testWriteFat32PartitionTablePartedFailureThrows(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('parted ', 1, "Error: Partition(s) on /dev/sdb are being used.\n");
+        $formatter = new PartitionFormatter($fake);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('parted failed to write the partition table on /dev/sdb.');
+        $formatter->writeFat32PartitionTable('/dev/sdb', new BufferedOutput(), self::io());
+    }
+
+    public function testWriteFat32PartitionTableUnmountsEveryPartitionThenWipesThenPartitions(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk -lnpo NAME', 0, "/dev/sdb\n/dev/sdb1\n/dev/sdb2\n");
+        $formatter = new PartitionFormatter($fake);
+
+        $formatter->writeFat32PartitionTable('/dev/sdb', new BufferedOutput(), self::io());
+
+        foreach (['/dev/sdb1', '/dev/sdb2'] as $partition) {
+            self::assertTrue($fake->ran("nsenter -t 1 --mount -- umount -f '$partition'"));
+            self::assertTrue($fake->ran("umount -f '$partition'"));
+        }
+        self::assertFalse($fake->ran("umount -f '/dev/sdb' "));
+        $expected = [
+            "wipefs -a '/dev/sdb' 2>&1",
+            "parted -s '/dev/sdb' mklabel msdos mkpart primary fat32 1MiB 100% set 1 lba on 2>&1",
+            "partprobe '/dev/sdb' 2>/dev/null",
+        ];
+        $actual = array_values(array_filter(
+            $fake->commands,
+            static fn(string $cmd): bool => in_array($cmd, $expected, true)
+        ));
+        self::assertSame($expected, $actual);
+    }
+
+    public function testWriteFat32PartitionTableWipefsFailureThrowsBeforeParted(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('wipefs ', 1, "wipefs: error: /dev/sdb: probing initialization failed: Device or resource busy\n");
+        $formatter = new PartitionFormatter($fake);
+
+        try {
+            $formatter->writeFat32PartitionTable('/dev/sdb', new BufferedOutput(), self::io());
+            self::fail('Expected RuntimeException.');
+        } catch (RuntimeException $e) {
+            self::assertStringContainsString('wipefs failed on /dev/sdb', $e->getMessage());
+        }
+        self::assertFalse($fake->ran('parted '));
     }
 }
