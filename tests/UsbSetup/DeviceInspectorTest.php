@@ -22,6 +22,8 @@ final class DeviceInspectorTest extends TestCase
     private const LSBLK_VENTOY = '{"blockdevices":[{"name":"sdb","size":"14.9G","type":"disk","tran":"usb",'
     .'"vendor":"FakeVend","model":"FakeModel","children":[{"name":"sdb1","type":"part"},'
     .'{"name":"sdb2","type":"part"}]}]}';
+    /** `blkid -o export` of a Ventoy stick's partition 2, as measured on a real stick. */
+    private const BLKID_VTOYEFI = "LABEL_FATBOOT=VTOYEFI\nLABEL=VTOYEFI\nUUID=1234-ABCD\nTYPE=vfat\n";
 
     /**
      * @return array<string, array{array, string, string, string, string}>
@@ -183,6 +185,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $inspector = self::make($fake);
 
         $result = $inspector->checkAndRecordDeviceName(
@@ -239,6 +242,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $updateConfigCalls = [];
         $inspector = self::make(
             $fake,
@@ -266,6 +270,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $updateConfigCalls = [];
         $inspector = self::make(
             $fake,
@@ -402,9 +407,51 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $inspector = self::make($fake);
 
         self::assertTrue($inspector->hasVentoyPartition('/dev/sdb'));
+        self::assertTrue($fake->ran("blkid -o export '/dev/sdb2'"));
+    }
+
+    /** A Mac or Windows GPT stick has an EFI partition 2 as well, but it is not Ventoy's. */
+    public function testHasVentoyPartitionTwoPartitionsWithoutVtoyefiLabel(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, "LABEL_FATBOOT=EFI\nLABEL=EFI\nTYPE=vfat\n");
+        $inspector = self::make($fake);
+
+        self::assertFalse($inspector->hasVentoyPartition('/dev/sdb'));
+    }
+
+    /** blkid exits 2 when partition 2 carries no filesystem or tag at all. */
+    public function testHasVentoyPartitionBlkidFindsNothing(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 2, '');
+        $inspector = self::make($fake);
+
+        self::assertFalse($inspector->hasVentoyPartition('/dev/sdb'));
+    }
+
+    /** Any other blkid failure falls back to the partition count, as before the label check. */
+    public function testHasVentoyPartitionBlkidFailureFallsBackToCount(): void
+    {
+        $fake = new FakeProcessRunner();
+        $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 4, '');
+        $inspector = self::make($fake);
+
+        self::assertTrue($inspector->hasVentoyPartition('/dev/sdb'));
+    }
+
+    public function testExportedLabelSkipsFatBootLabel(): void
+    {
+        self::assertSame('VTOYEFI', DeviceInspector::exportedLabel(self::BLKID_VTOYEFI));
+        self::assertSame('', DeviceInspector::exportedLabel("TYPE=vfat\nUUID=1234-ABCD\n"));
+        self::assertSame('', DeviceInspector::exportedLabel(''));
     }
 
     public function testIsFat32VentoyMatch(): void
@@ -476,6 +523,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk -J -o NAME,', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $inspector = self::make($fake);
 
         $info = $inspector->lsblkInfo('/dev/sdb');
@@ -878,6 +926,7 @@ final class DeviceInspectorTest extends TestCase
         $configPath = tempnam(sys_get_temp_dir(), 'usb_setup_device_inspector_test_').'.json';
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $fake->on('blkid -o value -s TYPE', 0, "vfat\n");
         $fake->on('blkid -o value -s LABEL', 0, "VENTOY\n");
         $inspector = self::make($fake, updateConfig: self::persistingUpdateConfig($configPath));
@@ -936,6 +985,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $fake->on('blkid -o value -s TYPE', 0, "exfat\n");
         $inspector = self::make($fake);
 
@@ -957,6 +1007,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $fake->on('blkid -o value -s TYPE', 0, "exfat\n");
         $inspector = self::make($fake);
 
@@ -998,6 +1049,7 @@ final class DeviceInspectorTest extends TestCase
     {
         $fake = new FakeProcessRunner();
         $fake->on('lsblk', 0, self::LSBLK_VENTOY);
+        $fake->on('blkid -o export', 0, self::BLKID_VTOYEFI);
         $inspector = self::make($fake);
 
         // Previous run recorded today's TARGET as its source → swapped-letters warning
