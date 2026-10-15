@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub Actions grants `contents: read`, pins checkout v4 and PHP setup v2 to upstream commits and does not
+  persist checkout credentials.
+
 ## [0.10.3] - 2026-10-15
 
 ### Security

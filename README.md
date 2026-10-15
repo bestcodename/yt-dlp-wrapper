@@ -61,6 +61,10 @@ ddev composer install            # re-adds phpunit (dev deps)
 ddev exec vendor/bin/phpunit     # or: ddev composer test
 ```
 
+GitHub Actions runs `composer test` on PHP 8.3 for every push. The workflow grants `contents: read`, pins
+checkout v4 and PHP setup v2 to upstream commits and does not persist checkout credentials. An action update
+means reviewing its upstream release and replacing the commit SHA while keeping the version-family comment.
+
 ---
 
 ## Configuration & parameter resolution
