@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-10-15
+
+### Security
+
+- History rewritten: commits carry the GitHub noreply identity instead of a private address, and employer IDE
+  files, a local shell prompt and a third person's nickname were removed from every commit
+- `.idea/.gitignore` keeps `copyright/`, `scopes` and `dataSources.xml` untracked
+
 ## [0.10.2] - 2026-10-01
 
 ### Changed

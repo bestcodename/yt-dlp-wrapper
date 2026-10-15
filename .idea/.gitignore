@@ -6,3 +6,7 @@
 # Datasource local storage ignored files
 /dataSources/
 /dataSources.local.xml
+# Employer and machine-local settings, kept out of the public repository
+/copyright/
+/scopes
+/dataSources.xml
