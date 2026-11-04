@@ -885,12 +885,14 @@ class PlaylistsSyncCommand extends BaseCommand
                     $m3uEntries['original'][] = $srcPath;
                 }
 
+                // Rekordbox drops M3U8 entries whose path contains "#"; "＃" is the fullwidth lookalike yt-dlp uses itself
+                $targetBase = str_replace('#', '＃', pathinfo($srcPath, PATHINFO_FILENAME));
                 foreach (['mp3', 'wav', 'flac'] as $fmt) {
                     if (!in_array($fmt, $formatsRequested, true)) {
                         continue;
                     }
                     $ext = $fmt;
-                    $target = $formatDirs[$fmt].DIRECTORY_SEPARATOR.pathinfo($srcPath, PATHINFO_FILENAME).".$ext";
+                    $target = $formatDirs[$fmt].DIRECTORY_SEPARATOR.$targetBase.".$ext";
                     $cover = ($fmt !== 'wav' && is_file($coverJpg)) ? $coverJpg : null;
                     $made = ($this->audioConverter)($srcPath, $target, $fmt, $tags, $cover);
                     if ($made) {

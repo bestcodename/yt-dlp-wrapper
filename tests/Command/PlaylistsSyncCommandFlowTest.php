@@ -394,6 +394,46 @@ final class PlaylistsSyncCommandFlowTest extends TestCase
         file_put_contents($originalDir.'/sp123 - Spot Track.m4a', 'm4adata');
     }
 
+    public function testHashInFilenameBecomesFullwidthInConvertedFileAndPlaylist(): void
+    {
+        // Rekordbox drops M3U8 entries whose path contains "#", so converted files carry "＃" instead.
+        // The original keeps its yt-dlp name and the "original" playlist still references it.
+        $originalDir = $this->workDir.'/out/library/original';
+        mkdir($originalDir, 0777, true);
+        file_put_contents($originalDir.'/123 - Track #1.wav', 'RIFFdata');
+        file_put_contents($originalDir.'/123 - Track #1.info.json', '{"title":"Track #1","uploader":"DJ"}');
+        file_put_contents($originalDir.'/123 - Track #1.jpg', 'jpegdata');
+
+        $fake = (new FakeProcessRunner())
+            ->on("'-J'", 0, self::PLAYLIST_JSON)
+            ->on('--download-archive', 0, "SEEN:Track #1\nDONE:123\n")
+            ->on('ffprobe', 0, "44100\n");
+        $tester = $this->makeTester($fake);
+
+        $exit = $tester->execute($this->options(), ['interactive' => false]);
+
+        self::assertSame(Command::SUCCESS, $exit);
+        $ffmpegCmds = array_values(
+            array_filter(
+                $fake->commands,
+                static fn(string $c): bool => str_starts_with($c, "'ffmpeg'")
+            )
+        );
+        self::assertCount(1, $ffmpegCmds);
+        self::assertStringContainsString('123 - Track ＃1.mp3', $ffmpegCmds[0]);
+
+        $m3u = (string)file_get_contents($this->workDir.'/out/playlists/DJ - My List - mp3.m3u8');
+        self::assertStringContainsString('123 - Track ＃1.mp3', $m3u);
+        $entries = array_slice(explode("\n", trim($m3u)), 1);
+        self::assertNotEmpty($entries);
+        foreach ($entries as $entry) {
+            self::assertStringNotContainsString('#', $entry);
+        }
+
+        $originalM3u = (string)file_get_contents($this->workDir.'/out/playlists/DJ - My List - original.m3u8');
+        self::assertStringContainsString('123 - Track #1.wav', $originalM3u);
+    }
+
     public function testInvalidFormatsFromCliFails(): void
     {
         $tester = $this->makeTester(new FakeProcessRunner());

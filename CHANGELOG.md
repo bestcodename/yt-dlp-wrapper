@@ -4,7 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.10.4] - 2026-11-04
+
+### Fixed
+
+- Converted MP3/WAV/FLAC files replace `#` with the fullwidth `＃`, because Rekordbox drops M3U8 entries whose path
+  contains `#`
 
 ### Changed
 
