@@ -116,3 +116,21 @@
     7. open question: which ANLZ tags the XDJ-RR reads, so the analysis covers those first
     8. keep the XDJ-RR at hand while working on this item, for a short real test cycle after each change: export a
        small test playlist, plug the stick into the XDJ-RR, check loading, waveform, beat grid, key and sync
+
+17. playlists:sync (proposal) stop with an error when two URLs map to the same playlist name. On 2026-11-04 the
+    SoundCloud set and the YouTube playlist "Samples" both became `Stefan Ripper - Samples.m3u8`, and the second write
+    silently overwrote the first. The check runs after the fetch phase, where `folder` is known for every playlist,
+    and names both URLs and the `# alias:` fix (ca. 45 Minuten)
+
+18. playlists:sync (proposal) resample WAV files outside 44.1, 48 and 96 kHz, which the XDJ-RR cannot play. On
+    2026-11-04 one track at 44000 Hz (Tim Oskar, Serotonin) was skipped by the Rekordbox export. Delete its WAV and
+    re-sync, so `AudioConverter` resamples it; Rekordbox may keep the old sample rate cached, so it needs a re-import
+    test (ca. 15 Minuten)
+
+19. playlists:sync (proposal) write a `rekordbox.xml` next to the M3U8 files. Rekordbox imports it as one library with
+    all playlists, which sidesteps M3U parsing (the dropped `#` entries) and the per-playlist import dialogs
+    (ca. 4 Stunden)
+
+20. playlists:sync (proposal) add an XDJ passthrough format that keeps MP3/AAC/WAV/AIFF sources as they are and
+    converts only what the XDJ-RR cannot play, such as FLAC or Opus, instead of converting every track to WAV
+    (ca. 3 Stunden)
