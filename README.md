@@ -309,7 +309,9 @@ with no effect on naming, e.g. the section headers already used in `config/playl
 ### Rekordbox import
 
 **File → Import Playlist** → select the `.m3u8` for the format you want. Each playlist imports independently; audio is
-stored once in the shared library.
+stored once in the shared library. Converted MP3/WAV/FLAC files carry the fullwidth `＃` instead of `#`, because
+Rekordbox silently drops M3U8 entries whose path contains `#`. `original` playlists keep the source filenames and are
+still affected.
 
 ---
 

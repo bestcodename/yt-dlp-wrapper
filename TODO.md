@@ -92,3 +92,27 @@
 
 15. usb:setup `--downloads-file -` is rejected with "Downloads file not found: -", while the free-text prompt accepts
     `-` as skip. The CLI option and `USB_DOWNLOADS_FILE` should accept `-` too.
+
+16. usb:export write the Rekordbox USB export ourselves, without Rekordbox (`PIONEER/rekordbox/export.pdb`, the `ANLZ`
+    analysis files and `Contents/`). Rekordbox in the win11 VM needed ca. 8 hours to analyse 1100 WAV tracks on
+    2026-11-04 before it could export. Start from the existing reverse-engineering work:
+    1. [Deep Symmetry crate-digger](https://github.com/Deep-Symmetry/crate-digger) and its `rekordbox_pdb.ksy`, the
+       reference description of the PDB and ANLZ formats
+    2. [kimtore/rex](https://github.com/kimtore/rex) (Go), which writes `export.pdb` from a Mixxx library but has no
+       waveforms, beat grids or hot cues; last pushed in October 2023 and marked unfit for live use by its author
+    3. [pyrekordbox](https://pypi.org/project/pyrekordbox/), check whether its PDB support writes or only reads
+    4. the export must carry the analysis (BPM, beat grid, key, waveforms, cue points in the ANLZ files), by whichever
+       route works: own analysis with the analysers Mixxx uses (qm-dsp for beats, libKeyFinder for key), essentia or
+       aubio, compared against Rekordbox's results on the same tracks; or reuse of the ANLZ files Rekordbox already
+       keeps on the PC (`%APPDATA%\Pioneer\rekordbox\share\PIONEER\USBANLZ`), which would keep Rekordbox only as
+       the analyser
+    5. own analysis runs one track per core in parallel. Rekordbox analysed 2-3 tracks per minute on 2026-11-04 while
+       the VM used about 2 of its 7 vCPUs (qemu at 190% on the 28-thread desktop), so the speedup is the main gain
+       of this route; it could also run during `playlists:sync` right after each download
+    6. approach: write PDB and ANLZ from the Deep Symmetry docs and check them with pyrekordbox; analyse with open-source
+       tools (Beat This!, madmom or essentia for beats, libKeyFinder or essentia for key, own DSP for waveforms fitted
+       against the stored ones); measure against Rekordbox's results on the same tracks (beats within 70 ms, BPM within
+       0.1, key exact or related)
+    7. open question: which ANLZ tags the XDJ-RR reads, so the analysis covers those first
+    8. keep the XDJ-RR at hand while working on this item, for a short real test cycle after each change: export a
+       small test playlist, plug the stick into the XDJ-RR, check loading, waveform, beat grid, key and sync
