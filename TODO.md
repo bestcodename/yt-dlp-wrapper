@@ -168,3 +168,16 @@
        2026-11-13), token `~/.config/youtube-playlists/google-token.json`; a playlist created seconds earlier answers
        `playlistItems.list` with 404 for a while
     4. names of mapped pairs stay equal on both sides (ca. 8 Stunden)
+
+24. usb:export (proposal) fix the two tracks still off in the Rekordbox export of 2026-11-13. The half-tempo BPMs
+    came from Rekordbox's Analysis Mode "Automatisch", which ignores the BPM range 128-255; with mode "normal"
+    (Preferences → Analyse, now set in the win11 VM) a re-analysis brought ca. 23 tekno tracks to full tempo (LENZ
+    91.67 → 210.00). Still off are "XENROX- ENERGY 204", exported at 136 BPM because a BPM typed into Grid Edit changes
+    the deck but not the track's BPM field, and "Toktok & Moonraker - Trampolin EP - Tokmoon (Ab)" (YouTube Tekno
+    Collection), auto-analysed at 100.33 before the mode switch. Set or re-analyse both, re-export their playlists
+    and mirror to the other sticks (ca. 20 Minuten)
+
+25. usb:export (proposal) keep Rekordbox off the Ventoy EFI partition. Passed through to the win11 VM, the stick
+    shows as E:VENTOY and F:VTOYEFI, and Rekordbox offers both as export targets. On 2026-11-13 one export went to F:
+    and left a `PIONEER/rekordbox` library with an empty playlist on the 32 MB partition, removed by hand afterwards.
+    Remove the drive letter of VTOYEFI in the VM (`mountvol F: /D`) or note it in the export steps (ca. 10 Minuten)

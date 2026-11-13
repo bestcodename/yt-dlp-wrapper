@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- TODO: proposals for duplicate playlist names, sample rates, `rekordbox.xml`, an XDJ passthrough format, a
+  YouTube fallback for DRM tracks, ISO replacement, SoundCloud/YouTube pair sync, the remaining Rekordbox BPM
+  fixes and keeping exports off the Ventoy EFI partition
+
 ## [0.10.4] - 2026-11-04
 
 ### Fixed
