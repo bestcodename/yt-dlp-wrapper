@@ -119,8 +119,10 @@
 
 17. playlists:sync (proposal) stop with an error when two URLs map to the same playlist name. On 2026-11-04 the
     SoundCloud set and the YouTube playlist "Samples" both became `Stefan Ripper - Samples.m3u8`, and the second write
-    silently overwrote the first. The check runs after the fetch phase, where `folder` is known for every playlist,
-    and names both URLs and the `# alias:` fix (ca. 45 Minuten)
+    silently overwrote the first. On 2026-11-13 the same happened to "Scheibensammlung" (SoundCloud 56 entries,
+    then YouTube 55), so the Rekordbox export carried only the YouTube list until an alias was added. The check runs
+    after the fetch phase, where `folder` is known for every playlist, and names both URLs and the `# alias:` fix
+    (ca. 45 Minuten)
 
 18. playlists:sync (proposal) resample WAV files outside 44.1, 48 and 96 kHz, which the XDJ-RR cannot play. On
     2026-11-04 one track at 44000 Hz (Tim Oskar, Serotonin) was skipped by the Rekordbox export. Delete its WAV and
@@ -141,10 +143,28 @@
     mostly on the artist's "- Topic" channel within 1 second of the SoundCloud duration. The fallback searches
     `ytsearch5:<artist> <title>`, prefers a "- Topic" channel, accepts only a duration within ±3 seconds, records the
     mapping so the search runs once per track, and writes the YouTube file into the SoundCloud playlist's M3U8 at the
-    original position (ca. 3 Stunden)
+    original position. The 10 replacements found on 2026-11-13 were added by hand to the YouTube counterparts listed
+    in `config/playlist-map.json` (see item 23), which the fallback can use as its first source (ca. 3 Stunden)
 
 22. usb:setup (proposal) replace an older Debian live ISO in `--update` mode instead of adding the new one next to it.
     On 2026-11-13 an update from 13.5.0 to 13.7.0 left the 13.5.0 ISO (3.9 GiB) on the stick, and `writeVentoyJson()`
     in `src/UsbSetup/IsoPayloadManager.php` appended a second persistence entry for the same `persistence.dat`, so
     both ISOs booted into one persistence image. Remove other `debian-live-*.iso` files of the same variant after a
     successful copy and replace their `ventoy.json` entries (ca. 45 Minuten)
+
+23. playlists:sync (proposal) sync SoundCloud and YouTube playlist pairs both ways. `config/playlist-map.json` on the
+    desktop holds the pairs (`pairs`, `youtube_only`, `youtube_excluded_non_music`), created on 2026-11-13 with 9
+    pairs and 4 YouTube-only playlists; 18 own SoundCloud sets still have no YouTube counterpart. Apart from the
+    shared names the two sides held different music on 2026-11-13, so the sync matches every track on the other
+    platform (yt-dlp search, "- Topic" first, duration within ±3 seconds, chromaprint check where durations differ)
+    and records matches so each track is searched once. Open points:
+    1. YouTube quota: `playlists.insert` and `playlistItems.insert` cost 50 units each against 10,000 per day by
+       Google's documentation, so about 200 writes a day; the ca. 1000 SoundCloud tracks need several days or a quota
+       increase. Searching goes through yt-dlp, not `search.list` (100 units)
+    2. SoundCloud writes: check whether SoundCloud accepts new API app registrations; the session token in
+       `config/cookies.txt` works only against the internal `api-v2`, which is a workaround, not an API
+    3. YouTube access: OAuth scope `youtube` through `bestcodename/ai/scripts/google-oauth/google_oauth.py`, client
+       `~/.config/todo-sync/google-client.json` (project `private-automation-511903`, YouTube Data API v3 enabled on
+       2026-11-13), token `~/.config/youtube-playlists/google-token.json`; a playlist created seconds earlier answers
+       `playlistItems.list` with 404 for a while
+    4. names of mapped pairs stay equal on both sides (ca. 8 Stunden)
