@@ -134,3 +134,17 @@
 20. playlists:sync (proposal) add an XDJ passthrough format that keeps MP3/AAC/WAV/AIFF sources as they are and
     converts only what the XDJ-RR cannot play, such as FLAC or Opus, instead of converting every track to WAV
     (ca. 3 Stunden)
+
+21. playlists:sync (proposal) fall back to YouTube for SoundCloud tracks that fail with "This video is DRM protected".
+    On 2026-11-13, 16 SoundCloud IDs (15 distinct tracks) failed this way, 8 of them by Androgyn Network. 6 were
+    already in the library from YouTube or spotdl with the exact same duration, and the other 9 had a match on YouTube,
+    mostly on the artist's "- Topic" channel within 1 second of the SoundCloud duration. The fallback searches
+    `ytsearch5:<artist> <title>`, prefers a "- Topic" channel, accepts only a duration within ±3 seconds, records the
+    mapping so the search runs once per track, and writes the YouTube file into the SoundCloud playlist's M3U8 at the
+    original position (ca. 3 Stunden)
+
+22. usb:setup (proposal) replace an older Debian live ISO in `--update` mode instead of adding the new one next to it.
+    On 2026-11-13 an update from 13.5.0 to 13.7.0 left the 13.5.0 ISO (3.9 GiB) on the stick, and `writeVentoyJson()`
+    in `src/UsbSetup/IsoPayloadManager.php` appended a second persistence entry for the same `persistence.dat`, so
+    both ISOs booted into one persistence image. Remove other `debian-live-*.iso` files of the same variant after a
+    successful copy and replace their `ventoy.json` entries (ca. 45 Minuten)
