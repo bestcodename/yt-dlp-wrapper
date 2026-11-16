@@ -1,4 +1,4 @@
-1. usb:setup Mac counter-test for the non-Ventoy fresh MBR (ca. 15 Minuten). Since 0.10.2, scratch mode with Ventoy
+1. usb:setup Mac counter-test for the non-Ventoy fresh MBR (ca. 10 Minuten). Since 0.10.2, scratch mode with Ventoy
    skipped writes a fresh MBR with one FAT32 LBA partition (type `0x0c`). Before that, a stick kept its old layout, and
    a MacBook did not recognize one such stick. The suspected cause, FAT32 behind partition type `0x07`, is unconfirmed.
    Set up one stick with `--install-ventoy no` and plug it into a Mac. If it mounts, the cause is confirmed. If it does
@@ -122,20 +122,20 @@
     silently overwrote the first. On 2026-11-13 the same happened to "Scheibensammlung" (SoundCloud 56 entries,
     then YouTube 55), so the Rekordbox export carried only the YouTube list until an alias was added. The check runs
     after the fetch phase, where `folder` is known for every playlist, and names both URLs and the `# alias:` fix
-    (ca. 45 Minuten)
+    (ca. 25 Minuten)
 
 18. playlists:sync (proposal) resample WAV files outside 44.1, 48 and 96 kHz, which the XDJ-RR cannot play. On
     2026-11-04 one track at 44000 Hz (Tim Oskar, Serotonin) was skipped by the Rekordbox export. Delete its WAV and
     re-sync, so `AudioConverter` resamples it; Rekordbox may keep the old sample rate cached, so it needs a re-import
-    test (ca. 15 Minuten)
+    test (ca. 10 Minuten)
 
 19. playlists:sync (proposal) write a `rekordbox.xml` next to the M3U8 files. Rekordbox imports it as one library with
     all playlists, which sidesteps M3U parsing (the dropped `#` entries) and the per-playlist import dialogs
-    (ca. 4 Stunden)
+    (ca. 2 Stunden)
 
 20. playlists:sync (proposal) add an XDJ passthrough format that keeps MP3/AAC/WAV/AIFF sources as they are and
     converts only what the XDJ-RR cannot play, such as FLAC or Opus, instead of converting every track to WAV
-    (ca. 3 Stunden)
+    (ca. 1 Stunde 30 Minuten)
 
 21. playlists:sync (proposal) fall back to YouTube for SoundCloud tracks that fail with "This video is DRM protected".
     On 2026-11-13, 16 SoundCloud IDs (15 distinct tracks) failed this way, 8 of them by Androgyn Network. 6 were
@@ -144,13 +144,13 @@
     `ytsearch5:<artist> <title>`, prefers a "- Topic" channel, accepts only a duration within ±3 seconds, records the
     mapping so the search runs once per track, and writes the YouTube file into the SoundCloud playlist's M3U8 at the
     original position. The 10 replacements found on 2026-11-13 were added by hand to the YouTube counterparts listed
-    in `config/playlist-map.json` (see item 23), which the fallback can use as its first source (ca. 3 Stunden)
+    in `config/playlist-map.json` (see item 23), which the fallback can use as its first source (ca. 1 Stunde 30 Minuten)
 
 22. usb:setup (proposal) replace an older Debian live ISO in `--update` mode instead of adding the new one next to it.
     On 2026-11-13 an update from 13.5.0 to 13.7.0 left the 13.5.0 ISO (3.9 GiB) on the stick, and `writeVentoyJson()`
     in `src/UsbSetup/IsoPayloadManager.php` appended a second persistence entry for the same `persistence.dat`, so
     both ISOs booted into one persistence image. Remove other `debian-live-*.iso` files of the same variant after a
-    successful copy and replace their `ventoy.json` entries (ca. 45 Minuten)
+    successful copy and replace their `ventoy.json` entries (ca. 25 Minuten)
 
 23. playlists:sync (proposal) sync SoundCloud and YouTube playlist pairs both ways. `config/playlist-map.json` on the
     desktop holds the pairs (`pairs`, `youtube_only`, `youtube_excluded_non_music`), created on 2026-11-13 with 9
@@ -167,9 +167,9 @@
        `~/.config/todo-sync/google-client.json` (project `private-automation-511903`, YouTube Data API v3 enabled on
        2026-11-13), token `~/.config/youtube-playlists/google-token.json`; a playlist created seconds earlier answers
        `playlistItems.list` with 404 for a while
-    4. names of mapped pairs stay equal on both sides (ca. 8 Stunden)
+    4. names of mapped pairs stay equal on both sides (ca. 4 Stunden)
 
 24. usb:export (proposal) keep Rekordbox off the Ventoy EFI partition. Passed through to the win11 VM, the stick
     shows as E:VENTOY and F:VTOYEFI, and Rekordbox offers both as export targets. On 2026-11-13 one export went to F:
     and left a `PIONEER/rekordbox` library with an empty playlist on the 32 MB partition, removed by hand afterwards.
-    Remove the drive letter of VTOYEFI in the VM (`mountvol F: /D`) or note it in the export steps (ca. 10 Minuten)
+    Remove the drive letter of VTOYEFI in the VM (`mountvol F: /D`) or note it in the export steps (ca. 5 Minuten)

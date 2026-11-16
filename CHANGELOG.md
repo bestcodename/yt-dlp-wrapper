@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- TODO: effort estimates halved, by the user's request of 2026-11-16
 - TODO: proposals for duplicate playlist names, sample rates, `rekordbox.xml`, an XDJ passthrough format, a
   YouTube fallback for DRM tracks, ISO replacement, SoundCloud/YouTube pair sync and keeping exports off the Ventoy
   EFI partition
